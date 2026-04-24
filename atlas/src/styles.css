@@ -1,0 +1,892 @@
+/* =============================================================================
+   Atlas — Global Stylesheet
+   =============================================================================
+
+   Plain CSS, no preprocessor, no CSS-in-JS. Everything the overlay needs
+   lives in one file for the duration of the prototype. When this grows past
+   ~400 lines we'll split by component.
+
+   Colour / type notes:
+     - We avoid named colours and hex values for semi-transparent fills —
+       `rgba()` makes the opacity intent explicit at the callsite.
+     - Font stack is Apple system, per the spec. No webfont loading; picking
+       the installed system font means zero FOUC and consistent kerning with
+       the OS chrome the overlay sits on top of.
+   ========================================================================= */
+
+/* -----------------------------------------------------------------------------
+   Box-sizing reset — border-box is what every modern design system assumes,
+   and saves us manually subtracting padding from width math everywhere.
+   ----------------------------------------------------------------------- */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+/* -----------------------------------------------------------------------------
+   Ancestors of `.overlay`.
+
+   Two things matter here:
+
+   (1) TRANSPARENCY — the Electron BrowserWindow is `transparent: true`, so
+       any non-transparent element at this level would paint a solid
+       rectangle over the native vibrancy blur and cancel the frosted-glass
+       illusion. So we use `background: transparent` throughout.
+
+   (2) NO FIXED HEIGHT — the Electron window resizes to match the overlay's
+       rendered height (see the ResizeObserver in App.tsx and the
+       `atlas:set-content-height` IPC in main.ts). If html/body/#root were
+       pinned to `height: 100%`, they'd always equal whatever the window is
+       currently sized to — which includes the brief moment DURING a grow
+       where the window hasn't caught up yet, clipping new content. So we
+       let them auto-size to their child's intrinsic height. Width stays
+       100% so the rounded panel stretches edge-to-edge.
+   ----------------------------------------------------------------------- */
+html,
+body,
+#root {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  background: transparent;
+}
+
+body {
+  /*
+   * Apple system font stack — matches native macOS UI typography.
+   * Listed concrete fallbacks so the overlay still renders reasonably on
+   * a non-Mac machine someone might clone the repo onto.
+   */
+  font-family:
+    -apple-system,
+    BlinkMacSystemFont,
+    "SF Pro Text",
+    "Helvetica Neue",
+    Helvetica,
+    Arial,
+    sans-serif;
+
+  /*
+   * Antialiasing hints: crisp text on Retina; less important elsewhere but
+   * harmless.
+   */
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+
+  color: #1d1d1f;
+
+  /*
+   * Disable native drag-to-select for the whole overlay. Users will still be
+   * able to type in the search input (inputs override this), but stray text
+   * selection from clicks in empty panel regions feels un-Spotlight-like.
+   */
+  user-select: none;
+  -webkit-user-select: none;
+
+  /*
+   * Prevent the overlay from ever showing scrollbars from its own body. If
+   * any zone overflows (e.g. a long preview body), that zone handles its
+   * own scrolling — not the window root. Keeps the chrome clean.
+   */
+  overflow: hidden;
+}
+
+/* -----------------------------------------------------------------------------
+   .overlay — the rounded frosted-glass panel that fills the window.
+
+   Layering from bottom to top, conceptually:
+     1. Desktop pixels under the Electron window.
+     2. Native macOS vibrancy blur (enabled via BrowserWindow `vibrancy:'hud'`).
+     3. THIS element's background tint (rgba(240,240,245,0.82)) — the exact
+        value specified in Subtask 4.
+     4. The actual UI (search bar, etc.) layered on top.
+
+   `border-radius: 14px` matches macOS Spotlight's corner radius as of
+   macOS 12+. `border: 0.5px solid rgba(0,0,0,0.08)` is the hairline border
+   that gives the panel just enough edge definition not to melt into light
+   wallpapers — half-pixel widths render crisp on Retina.
+   ----------------------------------------------------------------------- */
+.overlay {
+  width: 100%;
+
+  /*
+   * height: auto — the overlay is exactly as tall as its children.
+   * The Electron window, watched by the ResizeObserver in App.tsx, is
+   * resized by main to match this measured height, so the window contains
+   * no empty space and no ghost frosted rectangle appears below content.
+   *
+   * max-height matches WINDOW_MAX_HEIGHT in main.ts. If content exceeds
+   * this, individual zones (e.g. the expanded preview body) handle their
+   * own scrolling — the overlay itself never scrolls.
+   */
+  height: auto;
+  max-height: 720px;
+
+  background: rgba(240, 240, 245, 0.82);
+  border: 0.5px solid rgba(0, 0, 0, 0.08);
+  border-radius: 14px;
+
+  /*
+   * `backdrop-filter: blur()` is redundant when native vibrancy is active,
+   * but we keep it as a SAFETY NET. If someone runs the renderer in a
+   * regular browser for inspection (npm run dev:vite alone), they still
+   * see a frosted look instead of a flat tint. Unsupported browsers just
+   * ignore it.
+   */
+  backdrop-filter: blur(20px) saturate(1.4);
+  -webkit-backdrop-filter: blur(20px) saturate(1.4);
+
+  /*
+   * overflow:hidden ensures child content stays inside the rounded corners.
+   * Without this, a focus ring or a descender from a long result title
+   * could poke past the radius and ruin the silhouette.
+   */
+  overflow: hidden;
+
+  /*
+   * Stack the vertical zones: search bar → Atlas answer → results list →
+   * expanded preview → footer. Subtask 4 only adds the first of these; the
+   * rest appear in later subtasks as siblings below `.searchbar`.
+   */
+  display: flex;
+  flex-direction: column;
+}
+
+/* =============================================================================
+   Search bar (Subtask 4)
+   =============================================================================
+   Layout:
+     [ 🔍 icon ]   [ input …………………………………………… ]   [ esc ]
+       ~18px         flex:1 1 auto                        badge
+
+   Heights and paddings chosen to match Spotlight's visual weight:
+     - 56px tall is about the minimum that reads as "spacious" at 22px text
+     - 20px horizontal edge padding keeps the icon and esc badge away from
+       the rounded corner so they don't look cramped
+     - 14px gap between icon and input, input and badge
+   ============================================================================= */
+.searchbar {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  height: 56px;
+  padding: 0 16px 0 20px;
+  gap: 14px;
+  flex: 0 0 auto;
+  /*
+   * No bottom border in Subtask 4 (nothing below to separate). Subtask 5+
+   * will add a subtle divider when the answer block appears below.
+   */
+}
+
+.search-icon {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  color: rgba(0, 0, 0, 0.42);
+  /* SVG uses currentColor, so `color` above drives the stroke tint. */
+  pointer-events: none;
+}
+
+.search-input {
+  flex: 1 1 auto;
+  min-width: 0; /* allow input to shrink inside flex row — prevents overflow */
+
+  background: transparent;
+  border: none;
+  outline: none;
+
+  /*
+   * 22px feels right at the overlay's 620px width — readable without
+   * looking bloated. Spotlight uses roughly this size.
+   * font-weight 300 for a slightly lighter "query text" feel.
+   */
+  font-family: inherit;
+  font-size: 22px;
+  font-weight: 300;
+  line-height: 1.2;
+  color: #1d1d1f;
+
+  /* Re-enable text selection/caret — the body rule above disabled it globally. */
+  user-select: text;
+  -webkit-user-select: text;
+
+  /*
+   * Kill the native rounded-box that some macOS input types add by default.
+   */
+  appearance: none;
+  -webkit-appearance: none;
+  padding: 0;
+}
+
+.search-input::placeholder {
+  color: rgba(0, 0, 0, 0.32);
+  font-weight: 300;
+}
+
+/* -----------------------------------------------------------------------------
+   "esc" badge on the right side of the search bar.
+   Implemented as a <button> so it's keyboard-accessible AND clickable — the
+   onClick mirrors the Escape keystroke, dismissing the overlay.
+   ----------------------------------------------------------------------- */
+.esc-badge {
+  flex: 0 0 auto;
+
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+
+  color: rgba(0, 0, 0, 0.55);
+  background: rgba(0, 0, 0, 0.06);
+  border: none;
+  border-radius: 5px;
+  padding: 4px 8px;
+
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+
+  /* Kill native button chrome on macOS. */
+  appearance: none;
+  -webkit-appearance: none;
+
+  /*
+   * Subtle hover — matches the barely-there interactive feel of Spotlight's
+   * own clickable badges.
+   */
+  transition: background 120ms ease;
+}
+
+.esc-badge:hover {
+  background: rgba(0, 0, 0, 0.09);
+}
+
+.esc-badge:active {
+  background: rgba(0, 0, 0, 0.12);
+}
+
+.esc-badge:focus-visible {
+  /*
+   * Show a focus ring ONLY when the user tabs onto the badge (keyboard
+   * navigation). Normal click/hover stays ringless to match Spotlight.
+   */
+  outline: 2px solid rgba(37, 99, 235, 0.45);
+  outline-offset: 1px;
+}
+
+/* =============================================================================
+   Atlas synthesized answer block (Subtask 5)
+   =============================================================================
+   Sits directly below the search bar when a mock query matches. The vertical
+   stack continues from here:
+     .searchbar
+     .atlas-answer       ← THIS (only when matchedQuery !== null)
+     .results-list       ← Subtask 6
+     .expanded-preview   ← Subtask 7
+     .footer             ← Subtask 8
+
+   Visual signature: subtle blue tint background + a small blue dot + the
+   word "Atlas" in caps, then the synthesized prose. The blue is Apple's
+   system blue (#007aff) at very low opacity for the fill, and at full
+   chroma for the dot/label so the branding still pops at the small size.
+   ============================================================================= */
+.atlas-answer {
+  flex: 0 0 auto;
+  /*
+   * Hairline divider above the block. Visually anchors it to the search
+   * bar without a heavy line. 0.5px renders sharp on Retina displays —
+   * macOS uses the same trick on its own divider rules.
+   *
+   * All cross-zone dividers in the overlay use rgba(0,0,0,0.06) —
+   * standardised in the Subtask 8 polish pass. Intra-list row dividers
+   * (between result rows) use a lighter 0.04 so they whisper instead.
+   */
+  border-top: 0.5px solid rgba(0, 0, 0, 0.06);
+
+  /*
+   * Subtle blue tint. Apple system blue at 6% — barely there but enough
+   * to mark the zone as "AI / synthesized" rather than "user content".
+   * Sitting on top of the panel's rgba(240,240,245,0.82) base, the
+   * effective on-screen tint is even softer, which is exactly what we
+   * want — it should whisper, not shout.
+   */
+  background: rgba(0, 122, 255, 0.06);
+
+  /*
+   * Padding chosen to match Spotlight's vertical rhythm: ~14px above
+   * the label, ~16px below the prose. 20px horizontal aligns with the
+   * search bar's left edge (icon centred at 20px in from the edge).
+   */
+  padding: 14px 20px 16px;
+}
+
+/* The "● Atlas" label row above the prose. Semantically a heading-ish badge
+   but not an actual <h1>/<hN> because the overlay isn't a document. */
+.atlas-answer__label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+
+  margin-bottom: 8px;
+
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+
+  /* Apple system blue at 88% — vivid enough to pop, not pure to feel "ink". */
+  color: rgba(0, 122, 255, 0.88);
+}
+
+.atlas-answer__dot {
+  /*
+   * Small filled circle to the left of the label. Decorative only —
+   * announced as nothing by screen readers thanks to the parent's
+   * aria-hidden.
+   */
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #007aff;
+  flex: 0 0 auto;
+}
+
+.atlas-answer__body {
+  /*
+   * Reset margin because <p> defaults to 1em top/bottom.
+   * Font-size halfway between body text (13–14px) and the search input
+   * (22px) — readable but visually subordinate to whatever the user typed.
+   * line-height 1.5 gives the paragraph room to breathe in a constrained
+   * panel; tighter feels cramped.
+   */
+  margin: 0;
+
+  font-family: inherit;
+  font-size: 13.5px;
+  font-weight: 400;
+  line-height: 1.5;
+  color: #1d1d1f;
+
+  /*
+   * Re-enable selection on the answer body so users can copy a phrase
+   * from the synthesized text. The body rule disables it globally for
+   * the overlay (avoids weird stray selections in chrome regions).
+   */
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* =============================================================================
+   Top K results list (Subtask 6)
+   =============================================================================
+   Layout of one row:
+
+     [chip]  Title line, may ellipsise . . . . . . . . . . .    Date
+             Snippet / subtitle, truncated with ellipsis
+
+     - chip        : flex:0, fixed width, colour-coded by source type
+     - main column : flex:1, two lines of text, each overflow-truncated
+     - date cell   : flex:0, right-aligned, short form ("Apr 15")
+
+   Whole row gets #2563eb background + inverted text when `.is-selected`.
+   ============================================================================= */
+.results-list {
+  /*
+   * Reset <ul> defaults — we want the rows flush to the overlay edges,
+   * no bullet markers, no left padding.
+   */
+  list-style: none;
+  margin: 0;
+  padding: 0;
+
+  /*
+   * Hairline divider above the list, separating it from the Atlas answer
+   * block above (which has its own tinted background). Matches the 0.5px
+   * hairline weight used elsewhere for consistency.
+   */
+  border-top: 0.5px solid rgba(0, 0, 0, 0.06);
+
+  flex: 0 0 auto;
+}
+
+/* -----------------------------------------------------------------------------
+   Individual row
+   ----------------------------------------------------------------------- */
+.result-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+
+  /*
+   * Horizontal 20px matches the search bar's left padding so the chip
+   * aligns with the magnifying-glass icon. Vertical 9px keeps each row
+   * compact (~54px including two lines of text).
+   */
+  padding: 9px 20px;
+
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+
+  /*
+   * Smooth the selection colour change from keyboard navigation — not so
+   * slow that it feels laggy, just a subtle easing on selection swaps.
+   */
+  transition: background-color 80ms ease, color 80ms ease;
+}
+
+/*
+ * Subtle hairline between rows (adjacent-sibling selector, so no line
+ * above the first row or below the last).
+ */
+.result-row + .result-row {
+  border-top: 0.5px solid rgba(0, 0, 0, 0.04);
+}
+
+/* Hover — only applied when row isn't already the keyboard selection. */
+.result-row:hover:not(.is-selected) {
+  background: rgba(0, 0, 0, 0.03);
+}
+
+/* -----------------------------------------------------------------------------
+   Selected row — the exact #2563eb highlight called out in the spec.
+   Text contrast is swapped to whites (with slight opacity stepping for
+   title > snippet > date so the hierarchy is preserved on blue).
+   ----------------------------------------------------------------------- */
+.result-row.is-selected {
+  background: #2563eb;
+}
+
+.result-row.is-selected .result-row__title {
+  color: #ffffff;
+}
+
+.result-row.is-selected .result-row__snippet {
+  color: rgba(255, 255, 255, 0.82);
+}
+
+.result-row.is-selected .result-row__date {
+  color: rgba(255, 255, 255, 0.78);
+}
+
+/* -----------------------------------------------------------------------------
+   Main column (title + snippet).
+   `min-width: 0` is the magic that lets flex children actually overflow
+   and trigger `text-overflow: ellipsis`. Without it the flex default is
+   min-content, which prevents truncation.
+   ----------------------------------------------------------------------- */
+.result-row__main {
+  flex: 1 1 auto;
+  min-width: 0;
+
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.result-row__title {
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.3;
+  color: #1d1d1f;
+
+  /* One-line truncation with ellipsis. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.result-row__snippet {
+  font-family: inherit;
+  font-size: 11.5px;
+  font-weight: 400;
+  line-height: 1.3;
+  color: rgba(0, 0, 0, 0.55);
+
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* -----------------------------------------------------------------------------
+   Date cell — right-aligned, short form only ("Apr 15").
+   ----------------------------------------------------------------------- */
+.result-row__date {
+  flex: 0 0 auto;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 400;
+  color: rgba(0, 0, 0, 0.48);
+  white-space: nowrap;
+
+  /*
+   * Tabular-nums keeps "Apr 15" and "Apr 5" / "Apr 25" visually aligned
+   * across rows — subtle but noticeable when scanning a list.
+   */
+  font-variant-numeric: tabular-nums;
+}
+
+/* =============================================================================
+   Source chips
+   =============================================================================
+   One modifier class per SourceType: --mail, --messages, --documents,
+   --calendar. Colours loosely follow Apple's app-icon palette so users can
+   map chips to app identities at a glance:
+     Mail      → blue
+     Messages  → green  (iMessage)
+     Documents → orange (Finder)
+     Calendar  → red    (Calendar)
+
+   Pattern: a soft tint background + a full-chroma foreground. Both use the
+   same underlying hue for visual coherence.
+   ============================================================================= */
+.result-chip {
+  flex: 0 0 auto;
+
+  /* Centres the chip label at its small height. */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+
+  font-family: inherit;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+
+  padding: 3px 7px;
+  border-radius: 4px;
+  /*
+   * Fixed min-width keeps all chips the same size regardless of label
+   * length ("Mail" vs "Documents"). Makes the left edge of the main
+   * content column line up across every row.
+   */
+  min-width: 62px;
+  text-align: center;
+
+  /*
+   * Fallback background + colour if a SourceType ever slips past without
+   * a matching modifier. Light grey, hard to miss in review.
+   */
+  background: rgba(0, 0, 0, 0.06);
+  color: rgba(0, 0, 0, 0.55);
+}
+
+.result-chip--mail {
+  background: rgba(11, 120, 227, 0.13);
+  color: rgba(11, 120, 227, 0.95);
+}
+
+.result-chip--messages {
+  background: rgba(52, 199, 89, 0.17);
+  /* Darker green for text so the label pops against the soft tint. */
+  color: rgba(28, 145, 63, 0.95);
+}
+
+.result-chip--documents {
+  background: rgba(255, 149, 0, 0.17);
+  color: rgba(200, 112, 0, 0.95);
+}
+
+.result-chip--calendar {
+  background: rgba(255, 59, 48, 0.14);
+  color: rgba(200, 45, 40, 0.95);
+}
+
+/*
+ * When a row is selected, its chip sits on the #2563eb highlight. The
+ * tinted chip backgrounds clash on that colour, so we override to a
+ * neutral white-on-translucent-white look. The underlying source info is
+ * still conveyed by the chip LABEL itself ("Mail", "Calendar", etc.).
+ */
+.result-row.is-selected .result-chip {
+  background: rgba(255, 255, 255, 0.24);
+  color: #ffffff;
+}
+
+/* =============================================================================
+   Expanded preview (Subtask 7)
+   =============================================================================
+   Sits directly below the results list. Single column, full overlay width.
+   Content order top → bottom:
+
+     .preview__header       compact "Name · Date" line
+     .preview__title        one-line title / subject / file name
+     .preview__body         full body text with <mark>ed highlights
+     .preview__meta         <dl> metadata table: From / Date / Source
+     .preview__open         "Open in [app] →" link (right-aligned)
+
+   The only bounded dimension is .preview__body's max-height. Everything
+   else sizes to content. The whole preview is separated from the list
+   above it by a hairline divider.
+   ============================================================================= */
+.preview {
+  flex: 0 0 auto;
+  border-top: 0.5px solid rgba(0, 0, 0, 0.06);
+  padding: 12px 20px 14px;
+
+  /*
+   * Sits on the same translucent panel as everything else. We previously
+   * layered an extra white tint here to mark it as a "document surface";
+   * removed in the Subtask 8 polish pass because it made the preview
+   * feel brighter than every other zone and broke the illusion of a
+   * single coherent frosted panel.
+   */
+}
+
+/* -----------------------------------------------------------------------------
+   Top header — "Sarah Chen · Apr 15"
+   Reads as metadata, not content, so it's small, muted, and uppercase-ish.
+   ----------------------------------------------------------------------- */
+.preview__header {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+
+  font-family: inherit;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+
+  color: rgba(0, 0, 0, 0.5);
+  margin-bottom: 4px;
+}
+
+.preview__header-sep {
+  /* Decorative middle dot between name and date. Hidden from screen
+     readers via aria-hidden in the JSX. */
+  color: rgba(0, 0, 0, 0.3);
+}
+
+/* -----------------------------------------------------------------------------
+   Title
+   Subject line for Mail; event name for Calendar; file name for Documents;
+   other party's name for Messages. Allowed to wrap to two lines for long
+   titles — a single ellipsis would sometimes hide the meaningful half.
+   ----------------------------------------------------------------------- */
+.preview__title {
+  margin: 0 0 8px;
+
+  font-family: inherit;
+  font-size: 14.5px;
+  font-weight: 600;
+  line-height: 1.32;
+  color: #1d1d1f;
+
+  /* Let users copy the title for quoting. */
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* -----------------------------------------------------------------------------
+   Body — the main preview text. The only bounded element in the preview:
+   max-height caps at 140px with internal scroll, so an unusually long
+   mock body doesn't push the total overlay past WINDOW_MAX_HEIGHT (720).
+   Most mock bodies fit fully within the cap without scrolling.
+   ----------------------------------------------------------------------- */
+.preview__body {
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.5;
+  color: #1d1d1f;
+
+  max-height: 140px;
+  overflow-y: auto;
+
+  margin-bottom: 12px;
+
+  user-select: text;
+  -webkit-user-select: text;
+
+  /*
+   * Scrollbar on macOS is near-invisible by default (overlay style), so
+   * no explicit scrollbar styling. Keeping the native look matches
+   * Spotlight / Mail / every other native app.
+   */
+}
+
+/* -----------------------------------------------------------------------------
+   Highlighted term — rendered via <mark> inside .preview__body.
+   Subtle blue tint matches the #2563eb selection highlight used in the
+   results list. Slight padding + border-radius makes the highlight read
+   as a pill rather than a raw background swatch.
+   ----------------------------------------------------------------------- */
+.preview__highlight {
+  background: rgba(37, 99, 235, 0.14);
+  color: #1d1d1f;
+  font-weight: 600;
+
+  /* Tiny horizontal padding + rounded corners = readable highlight. */
+  padding: 0 2px;
+  border-radius: 2px;
+}
+
+/* -----------------------------------------------------------------------------
+   Metadata table — From / Date / Source in a two-column layout.
+   Implemented as <dl> with inner <dt>/<dd> rows for semantics.
+   ----------------------------------------------------------------------- */
+.preview__meta {
+  /* Top hairline + spacing separates from the body above. */
+  border-top: 0.5px solid rgba(0, 0, 0, 0.06);
+  padding-top: 10px;
+
+  margin: 0 0 10px;
+}
+
+.preview__meta-row {
+  display: flex;
+  gap: 12px;
+  align-items: baseline;
+  padding: 2px 0;
+}
+
+.preview__meta dt {
+  /* Fixed-width label column so all values line up vertically. */
+  flex: 0 0 56px;
+
+  font-family: inherit;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.45px;
+  text-transform: uppercase;
+
+  color: rgba(0, 0, 0, 0.42);
+
+  /* Nudge the label down slightly so uppercase caps align with the
+     lowercase x-height of the value text. Cosmetic. */
+  padding-top: 1px;
+}
+
+.preview__meta dd {
+  flex: 1 1 auto;
+  min-width: 0;
+
+  margin: 0;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 400;
+  color: rgba(0, 0, 0, 0.78);
+
+  /*
+   * Some From values are long ("Sarah Chen <sarah.chen@northwind.io>").
+   * Allow them to wrap rather than push the metadata column out.
+   */
+  overflow-wrap: anywhere;
+
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* -----------------------------------------------------------------------------
+   "Open in [app] →" — right-aligned CTA link at the bottom of the preview.
+   Styled as a link, rendered as a <button> so it's keyboard-activatable.
+   ----------------------------------------------------------------------- */
+.preview__open {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.preview__open-link {
+  /* Strip native button chrome. */
+  appearance: none;
+  -webkit-appearance: none;
+  border: none;
+  background: transparent;
+
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  color: #2563eb;
+
+  padding: 4px 6px;
+  border-radius: 4px;
+
+  cursor: pointer;
+  transition: background 120ms ease;
+}
+
+.preview__open-link:hover {
+  background: rgba(37, 99, 235, 0.08);
+}
+
+.preview__open-link:focus-visible {
+  outline: 2px solid rgba(37, 99, 235, 0.45);
+  outline-offset: 1px;
+}
+
+/* =============================================================================
+   Footer (Subtask 8)
+   =============================================================================
+   Right-aligned row of ↑↓ navigate · ↵ open · esc close hints.
+   Small, muted, and visually subordinate to everything above. Only
+   rendered when a query is matched (see conditional in App.tsx).
+   ============================================================================= */
+.footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 14px;
+
+  padding: 7px 18px 8px;
+  border-top: 0.5px solid rgba(0, 0, 0, 0.06);
+
+  flex: 0 0 auto;
+
+  /*
+   * Footer is purely decorative — prevent text selection so accidental
+   * drag-select across the whole overlay doesn't pick up keyboard glyphs.
+   */
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* One hint unit: "[↑][↓] navigate". Inline-flex keeps the keys on the
+   same line as their verb even if the footer is ever tight on width. */
+.footer__hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.footer__hint-label {
+  font-family: inherit;
+  font-size: 10.5px;
+  font-weight: 400;
+  color: rgba(0, 0, 0, 0.48);
+  margin-left: 2px;
+}
+
+/* -----------------------------------------------------------------------------
+   Keyboard badge. Smaller and more muted than the search bar's esc-badge,
+   because these are affordance hints, not actionable controls.
+   ----------------------------------------------------------------------- */
+.footer__key {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+
+  font-family: inherit;
+  font-size: 10px;
+  font-weight: 500;
+
+  color: rgba(0, 0, 0, 0.6);
+  background: rgba(0, 0, 0, 0.055);
+  border-radius: 3px;
+
+  /*
+   * Reset <kbd>'s default browser monospace styling — we want it to match
+   * the overlay's system font, not look like a terminal.
+   */
+  font-variant: normal;
+}

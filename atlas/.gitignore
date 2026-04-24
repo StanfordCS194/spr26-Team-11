@@ -1,0 +1,40 @@
+# =============================================================================
+# Atlas — files and directories excluded from version control.
+# =============================================================================
+#
+# Policy: we commit SOURCE (TS/TSX/CSS/HTML/JSON/MD) and LOCK FILES (enough
+# for any teammate to run `npm install` and reproduce an identical dep tree).
+# We never commit installed packages or build output — those are derivable
+# from what we do commit.
+# =============================================================================
+
+# ---- Installed packages ----------------------------------------------------
+# npm install regenerates this (~350 MB, 200-ish packages). Checking it in
+# would massively bloat the repo and cause endless merge conflicts.
+node_modules/
+
+# ---- Build output ----------------------------------------------------------
+# Vite writes the production renderer bundle into dist/. tsc writes the
+# compiled Electron main + preload into dist-electron/. Both are produced
+# by `npm run build` (and `npm run dev` for dist-electron/), so there's no
+# reason to track them.
+dist/
+dist-electron/
+
+# ---- OS cruft --------------------------------------------------------------
+# macOS sprinkles .DS_Store files into directories as users browse them in
+# Finder. Never useful in git.
+.DS_Store
+
+# ---- Editor / IDE scratchpads ---------------------------------------------
+# Harmless defensively-listed — avoids accidental commits of local editor
+# state that varies per teammate.
+.vscode/
+.idea/
+*.swp
+
+# ---- Logs / debug dumps ---------------------------------------------------
+# npm and node occasionally drop diagnostic files at repo root when things
+# go wrong. Ignore them rather than accidentally committing them.
+*.log
+npm-debug.log*
