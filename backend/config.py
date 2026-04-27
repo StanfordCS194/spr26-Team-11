@@ -12,3 +12,10 @@ INDEXABLE_EXTENSIONS = {".txt", ".md", ".pdf", ".docx", ".py", ".js", ".ts", ".h
 
 # Directories to skip during filesystem walk
 EXCLUDED_DIRS = {".venv", "venv", "node_modules", ".git", "__pycache__", ".mypy_cache", "dist", "build"}
+
+# Daemon (FastAPI server)
+DAEMON_HOST = "127.0.0.1"
+DAEMON_PORT = 8765
+DAEMON_URL = f"http://{DAEMON_HOST}:{DAEMON_PORT}"
+DAEMON_PID_FILE = DATA_DIR / "daemon.pid"
+DAEMON_LOG_FILE = DATA_DIR / "daemon.log"

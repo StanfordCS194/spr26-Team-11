@@ -96,7 +96,7 @@ def _parse_file(path: Path) -> str | None:
 # Filesystem ingestion
 # ---------------------------------------------------------------------------
 
-def index_filesystem(root: Path, verbose: bool = False) -> int:
+def index_filesystem(root: Path, verbose: bool = False, progress_callback=None) -> int:
     indexed = 0
     files = [
         p for p in root.rglob("*")
@@ -141,6 +141,8 @@ def index_filesystem(root: Path, verbose: bool = False) -> int:
         )
 
         indexed += 1
+        if progress_callback is not None:
+            progress_callback(indexed, len(files))
         if verbose:
             print(f"  indexed: {path.relative_to(root)} ({len(raw_chunks)} chunks)")
 

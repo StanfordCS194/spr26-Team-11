@@ -18,46 +18,63 @@ def _tokenize(text: str) -> list[str]:
     return [t for t in re.split(r'[^a-zA-Z0-9]+', text.lower()) if len(t) > 1]
 
 
-def search(query: str, n_results: int = 10, source_filter: str | None = None) -> list[Result]:
-    """Hybrid semantic + path-keyword search."""
-    if store.count() == 0:
-        return []
+def _adaptive_semantic_weight(query_tokens: list[str], source_filter: str | None) -> float:
+    """Pick a semantic_weight based on query character.
 
+    - iMessage chunks have empty path_tokens, so path scoring adds no signal → 1.0.
+    - Queries with digit-bearing tokens ("cs107", "194w") usually mean a path
+      keyword (course code, version) → 0.5 to give path scoring more weight.
+    - Plain natural-language queries → 0.7 default.
+    """
+    if source_filter == "imessage":
+        return 1.0
+    if any(any(c.isdigit() for c in t) for t in query_tokens):
+        return 0.5
+    return 0.7
+
+
+def search(query: str, n_results: int = 10, source_filter: str | None = None) -> list[Result]:
+    """Hybrid semantic + path-keyword search.
+
+    Returns at most one result per unique source_path (the best-scoring chunk
+    from each file). To get N unique files, the underlying store is asked for
+    more chunks than needed and the duplicates are collapsed.
+    """
     embedding = embedder.embed_one(query)
     query_tokens = _tokenize(query)
-    raw = store.query_hybrid(embedding, query_tokens, n_results=n_results * 2)
+    semantic_weight = _adaptive_semantic_weight(query_tokens, source_filter)
+    raw = store.query_hybrid(
+        embedding, query_tokens, n_results=n_results * 3,
+        source_filter=source_filter, semantic_weight=semantic_weight,
+    )
 
-    results = []
+    seen: dict[str, Result] = {}
     for doc, meta, distance in zip(
         raw["documents"][0],
         raw["metadatas"][0],
         raw["distances"][0],
     ):
-        if source_filter and meta["source_type"] != source_filter:
+        path = meta["source_path"]
+        if path in seen and seen[path].score <= distance:
             continue
-        results.append(Result(
+        seen[path] = Result(
             source_type=meta["source_type"],
-            source_path=meta["source_path"],
+            source_path=path,
             snippet=doc[:300].replace("\n", " "),
             score=round(distance, 4),
-        ))
+        )
 
-    return results[:n_results]
-
-
-def find_files(query: str, n_results: int = 10, source_filter: str | None = None) -> list[Result]:
-    """Search and deduplicate by file — returns one result per unique source path."""
-    raw = search(query, n_results=n_results * 3, source_filter=source_filter)
-    seen: dict[str, Result] = {}
-    for r in raw:
-        if r.source_path not in seen or r.score < seen[r.source_path].score:
-            seen[r.source_path] = r
     return sorted(seen.values(), key=lambda x: x.score)[:n_results]
 
 
+def find_files(query: str, n_results: int = 10, source_filter: str | None = None) -> list[Result]:
+    """Alias for search() — search now deduplicates by file."""
+    return search(query, n_results=n_results, source_filter=source_filter)
+
+
 def find_directories(query: str, n_results: int = 10) -> list[Result]:
-    """Search and group by parent directory — returns one result per unique directory."""
-    raw = search(query, n_results=n_results * 5, source_filter="filesystem")
+    """Group search results by parent directory — returns one result per unique directory."""
+    raw = search(query, n_results=n_results * 3, source_filter="filesystem")
     seen: dict[str, float] = {}
     for r in raw:
         directory = str(Path(r.source_path).parent)
