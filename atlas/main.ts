@@ -127,8 +127,8 @@ let mainWindow: BrowserWindow | null = null;
 // Timings, tuned to feel like macOS Spotlight's own appear/dismiss. Fade-out
 // is slightly faster than fade-in so dismissal feels snappy while appearance
 // feels deliberate.
-const FADE_IN_MS = 120;
-const FADE_OUT_MS = 100;
+const FADE_IN_MS = 80; //120;
+const FADE_OUT_MS = 60; //100;
 
 let fadeIntervalId: NodeJS.Timeout | null = null;
 let fadeToken = 0;
@@ -457,7 +457,8 @@ app.whenReady().then(() => {
   // Cmd+Shift+Space). `Cmd+Space` is Spotlight; `Ctrl+Cmd+Space` is the
   // system emoji picker — both avoided.
   const registered = globalShortcut.register(
-    "CommandOrControl+Shift+Space",
+    // "CommandOrControl+Shift+Space",
+    "Option+Space",
     toggleOverlay
   );
   if (!registered) {

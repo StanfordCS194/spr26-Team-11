@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from fastapi import FastAPI, Query, HTTPException, BackgroundTasks
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 import store
@@ -47,17 +48,36 @@ async def lifespan(app: FastAPI):
     con = store._conn()
     store._populate_cache(con)
     con.close()
-    log.info("warming LLM (Phi-3-mini)...")
-    try:
-        from llm import parse_query
-        parse_query("warmup")
-    except Exception as e:
-        log.warning("LLM warmup skipped: %s", e)
-    log.info("daemon ready")
+    # LLM warmup runs in a background thread — Phi-3-mini load is intermittently
+    # slow (a few minutes) and would otherwise block the daemon from accepting
+    # any requests, including /search which doesn't need the LLM at all. /ask
+    # callers will pay the load cost on the first call instead.
+    def _warm_llm():
+        try:
+            from llm import parse_query
+            parse_query("warmup")
+            log.info("LLM warmup complete (background)")
+        except Exception as e:
+            log.warning("LLM warmup skipped: %s", e)
+
+    threading.Thread(target=_warm_llm, daemon=True).start()
+    log.info("daemon ready (LLM warming in background)")
     yield
 
 
 app = FastAPI(title="Atlas", description="Local AI search across personal data.", lifespan=lifespan)
+
+# Renderer is loaded from http://localhost:5173 in dev (Vite) and from
+# file:// in prod-built Electron. Both differ in origin from the daemon at
+# 127.0.0.1:8765, so without CORS the browser blocks the cross-origin fetch.
+# Allowing localhost-only origins is safe — the daemon already binds to the
+# loopback interface.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origin_regex=r"^(http://localhost(:\d+)?|http://127\.0\.0\.1(:\d+)?|file://.*)$",
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 class IndexFilesystemRequest(BaseModel):

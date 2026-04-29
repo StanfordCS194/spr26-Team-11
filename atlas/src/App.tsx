@@ -30,14 +30,14 @@
 //     </div>
 // =============================================================================
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
-  findMatchingQuery,
   MockQuery,
   MockResult,
   SourceType,
 } from "./mockData";
 import { logEvent } from "./logger";
+import { searchDaemon } from "./api";
 
 export default function App() {
   // ---------------------------------------------------------------------------
@@ -50,19 +50,56 @@ export default function App() {
   const [query, setQuery] = useState<string>("");
 
   // ---------------------------------------------------------------------------
-  // Matched mock query (Subtask 5).
+  // Matched query — debounced fetch against the local backend daemon.
   // ---------------------------------------------------------------------------
-  // findMatchingQuery is a substring test against each mock query's trigger
-  // — short inputs like "bud" surface "q2 budget", "onboard" surfaces
-  // "onboarding". Returns null for empty input, which we use directly as the
-  // gate on rendering the answer block. useMemo keeps the lookup cached
-  // across re-renders that don't actually change `query` (e.g. unrelated
-  // state updates that may land in later subtasks).
+  // The daemon at 127.0.0.1:8765 returns ranked chunks from the user's
+  // indexed filesystem and iMessage data. searchDaemon() shapes the response
+  // into a MockQuery so the existing UI render path (AtlasAnswer + ResultsList
+  // + ExpandedPreview) doesn't change.
+  //
+  // Debounce: a 200 ms delay collapses bursts of keystrokes into one request.
+  // AbortController cancels any in-flight request when the user keeps typing,
+  // so the latest query always wins and stale responses can't overwrite it.
   // ---------------------------------------------------------------------------
-  const matchedQuery: MockQuery | null = useMemo(
-    () => findMatchingQuery(query),
-    [query]
-  );
+  const [matchedQuery, setMatchedQuery] = useState<MockQuery | null>(null);
+  // Tracks an in-flight backend fetch so the UI can render a loading
+  // indicator. Set to true the moment the debounce timer fires (not on
+  // every keystroke), so the spinner doesn't flicker during fast typing.
+  const [isSearching, setIsSearching] = useState<boolean>(false);
+
+  useEffect(() => {
+    if (!query.trim()) {
+      setMatchedQuery(null);
+      setIsSearching(false);
+      return;
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(async () => {
+      setIsSearching(true);
+      try {
+        const result = await searchDaemon(query, controller.signal);
+        setMatchedQuery(result);
+      } catch (e) {
+        if ((e as Error).name === "AbortError") return;
+        // Network/daemon errors fall through to a null match. Logging keeps
+        // them visible in DevTools without breaking the UI.
+        console.error("[atlas] search failed:", e);
+        setMatchedQuery(null);
+      } finally {
+        // Only clear the flag if this effect run is still the latest one.
+        // The cleanup function aborts the request before it can resolve, so
+        // the AbortError branch above prevents this finally from running on
+        // stale fetches — but defensive ordering doesn't hurt.
+        if (!controller.signal.aborted) {
+          setIsSearching(false);
+        }
+      }
+    }, 200);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [query]);
 
   // ---------------------------------------------------------------------------
   // Selected result index (Subtask 6).
@@ -408,6 +445,24 @@ export default function App() {
       </div>
 
       {/* -----------------------------------------------------------------
+         Loading indicator. Visible whenever a backend fetch is in flight.
+         Sits between the input and the results so the user sees that
+         their query is being processed even before any results arrive
+         (and during refinements over an existing matched query).
+         ----------------------------------------------------------------- */}
+      {isSearching && (
+        <div
+          className="search-loading"
+          role="status"
+          aria-label="Searching..."
+        >
+          <span className="search-loading-dot" />
+          <span className="search-loading-dot" />
+          <span className="search-loading-dot" />
+        </div>
+      )}
+
+      {/* -----------------------------------------------------------------
          Atlas synthesized answer block (Subtask 5).
          Conditionally rendered: only when the typed input substring-
          matches a mock query's trigger. The overlay grows to include it
@@ -444,7 +499,7 @@ export default function App() {
          ----------------------------------------------------------------- */}
       {matchedQuery && (
         <ExpandedPreview
-          key={matchedQuery.results[selectedIndex].id}
+          // key={matchedQuery.results[selectedIndex].id}
           result={matchedQuery.results[selectedIndex]}
           onOpen={openSelectedResult}
         />
@@ -563,8 +618,26 @@ function ResultRow({
   // conventions (`result-chip--mail`, etc.).
   const chipModifier = sourceChipModifier(result.source);
 
+  // Keep the selected row visible inside the scrollable .results-list. When
+  // the user arrows past the last visible row, the list scrolls just enough
+  // to bring the new selection into view. `block: "nearest"` ensures we
+  // never scroll a row that's already on screen — no jumpiness when the
+  // selection moves between two visible rows.
+  const rowRef = useRef<HTMLLIElement>(null);
+  // useLayoutEffect (not useEffect) so the scroll happens BEFORE the browser
+  // paints. Otherwise the new .is-selected highlight paints at the row's old
+  // off-screen position, the user sees a blue flash, and only then does the
+  // scroll catch up. With useLayoutEffect the className change and the scroll
+  // adjustment land in the same visual frame.
+  useLayoutEffect(() => {
+    if (selected) {
+      rowRef.current?.scrollIntoView({ block: "nearest" });
+    }
+  }, [selected]);
+
   return (
     <li
+      ref={rowRef}
       className={className}
       role="option"
       aria-selected={selected}
@@ -660,6 +733,11 @@ function ExpandedPreview({
   // Same compression logic used by the results list.
   const headerDate = shortDate(result.date);
 
+  const bodyRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    bodyRef.current?.scrollTo(0, 0);
+  }, [result.id]);
+
   return (
     <div className="preview">
       {/* ------------------------------------------------------------------
@@ -689,7 +767,7 @@ function ExpandedPreview({
        * <HighlightedBody> which tokenises the text on a regex built
        * from the highlights array.
        */}
-      <div className="preview__body">
+      <div className="preview__body" ref={bodyRef}>
         <HighlightedBody text={result.body} terms={result.highlights} />
       </div>
 
