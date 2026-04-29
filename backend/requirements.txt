@@ -2,6 +2,7 @@ fastapi
 uvicorn[standard]
 fastembed
 numpy
+scipy
 pypdf
 python-docx
 typer[all]

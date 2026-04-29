@@ -1,25 +1,33 @@
 """
-Lightweight vector store: SQLite for metadata + numpy for similarity search.
-No external vector DB dependency — sqlite3 is stdlib, numpy comes with fastembed.
+Lightweight vector store: SQLite for metadata + numpy/scipy for similarity search.
+sqlite3 is stdlib; numpy comes with fastembed; scipy is added for sparse matvec
+on the path-keyword index.
 """
 import sqlite3
 import numpy as np
+import scipy.sparse as sp
 from config import DB_DIR
 
 DB_DIR.mkdir(parents=True, exist_ok=True)
 _DB_PATH = DB_DIR / "atlas.db"
 
 # ---------------------------------------------------------------------------
-# In-memory embedding cache (split: lightweight metadata + embeddings only).
-# Document text stays on disk and is fetched for top-k winners only — keeps
-# the cache footprint dominated by embeddings (~1.5 KB/chunk) instead of
-# embeddings + raw text (~5 KB/chunk).
+# In-memory cache.
+# - _cache_embeddings: dense (n_chunks, dim) float32 — for cosine search
+# - _cache_meta: list of (id, source_type, source_path, chunk_idx, timestamp,
+#                         path_tokens) — lightweight metadata
+# - _cache_path_vocab: dict[token -> column index] for the path keyword vocab
+# - _cache_path_matrix: sparse (n_chunks, n_vocab) bool — chunk i contains
+#                       vocab token j. Replaces the old per-row Python loop in
+#                       _path_keyword_score with one sparse matvec at query time.
+# Document text stays on disk and is fetched for top-k winners only.
 # Populated on first query, invalidated whenever the DB is written.
-# _cache_meta rows: (id, source_type, source_path, chunk_idx, timestamp, path_tokens)
 # ---------------------------------------------------------------------------
 _cache_valid = False
-_cache_embeddings: np.ndarray | None = None  # shape (N, dim)
+_cache_embeddings: np.ndarray | None = None
 _cache_meta: list[tuple] | None = None
+_cache_path_vocab: dict[str, int] | None = None
+_cache_path_matrix: sp.csr_matrix | None = None
 
 
 def _invalidate_cache() -> None:
@@ -27,8 +35,44 @@ def _invalidate_cache() -> None:
     _cache_valid = False
 
 
+def _build_path_index(ptokens: tuple[str, ...]) -> tuple[dict[str, int], sp.csr_matrix]:
+    """Build (vocab, sparse incidence matrix) from per-chunk path-token strings.
+
+    The matrix has one row per chunk, one column per unique path token across
+    the index. M[i, j] == 1 iff chunk i's path contains vocab token j.
+    """
+    vocab: dict[str, int] = {}
+    rows_idx: list[int] = []
+    cols_idx: list[int] = []
+    for chunk_idx, pt in enumerate(ptokens):
+        if not pt:
+            continue
+        seen_in_chunk: set[int] = set()
+        for tok in pt.lower().split():
+            col = vocab.get(tok)
+            if col is None:
+                col = len(vocab)
+                vocab[tok] = col
+            if col not in seen_in_chunk:
+                seen_in_chunk.add(col)
+                rows_idx.append(chunk_idx)
+                cols_idx.append(col)
+    n_chunks = len(ptokens)
+    n_vocab = len(vocab)
+    if n_vocab == 0:
+        return vocab, sp.csr_matrix((n_chunks, 0), dtype=np.float32)
+    data = np.ones(len(rows_idx), dtype=np.float32)
+    matrix = sp.csr_matrix(
+        (data, (rows_idx, cols_idx)),
+        shape=(n_chunks, n_vocab),
+        dtype=np.float32,
+    )
+    return vocab, matrix
+
+
 def _populate_cache(con: sqlite3.Connection) -> None:
     global _cache_valid, _cache_embeddings, _cache_meta
+    global _cache_path_vocab, _cache_path_matrix
     if _cache_valid:
         return
     rows = con.execute(
@@ -41,9 +85,12 @@ def _populate_cache(con: sqlite3.Connection) -> None:
             [np.frombuffer(b, dtype=np.float32) for b in blobs]
         )
         _cache_meta = list(zip(ids, stypes, spaths, cidxs, tss, ptokens))
+        _cache_path_vocab, _cache_path_matrix = _build_path_index(ptokens)
     else:
         _cache_embeddings = np.empty((0, 384), dtype=np.float32)
         _cache_meta = []
+        _cache_path_vocab = {}
+        _cache_path_matrix = sp.csr_matrix((0, 0), dtype=np.float32)
     _cache_valid = True
 
 
@@ -168,8 +215,10 @@ def query(embedding: list[float], n_results: int = 10) -> dict:
     con = _conn()
     _populate_cache(con)
     con.close()
-    return _rank(_cache_meta, _cache_embeddings, embedding, n_results,
-                 semantic_weight=1.0, query_tokens=[])
+    return _rank(
+        _cache_meta, _cache_embeddings, _cache_path_matrix, _cache_path_vocab,
+        embedding, n_results, semantic_weight=1.0, query_tokens=[],
+    )
 
 
 def query_hybrid(
@@ -185,23 +234,70 @@ def query_hybrid(
     con.close()
 
     if source_filter and _cache_meta:
-        mask = np.array([m[1] == source_filter for m in _cache_meta], dtype=bool)
-        meta = [m for m, keep in zip(_cache_meta, mask) if keep]
+        mask_list = [m[1] == source_filter for m in _cache_meta]
+        mask = np.array(mask_list, dtype=bool)
+        meta = [m for m, keep in zip(_cache_meta, mask_list) if keep]
         emb_matrix = _cache_embeddings[mask]
+        path_matrix = _cache_path_matrix[mask] if _cache_path_matrix.shape[0] else _cache_path_matrix
     else:
         meta = _cache_meta
         emb_matrix = _cache_embeddings
+        path_matrix = _cache_path_matrix
 
-    return _rank(meta, emb_matrix, embedding, n_results, semantic_weight, query_tokens)
+    return _rank(
+        meta, emb_matrix, path_matrix, _cache_path_vocab,
+        embedding, n_results, semantic_weight, query_tokens,
+    )
 
 
 # ---------------------------------------------------------------------------
 # Ranking
 # ---------------------------------------------------------------------------
 
+def _path_keyword_scores_vec(
+    query_tokens: list[str],
+    path_matrix: sp.csr_matrix,
+    vocab: dict[str, int],
+) -> np.ndarray:
+    """Vectorized path-keyword scoring for ALL chunks at once.
+
+    Returns a numpy array of shape (n_chunks,) where each entry is the fraction
+    of query tokens that have at least one substring match against the chunk's
+    path tokens. Replaces a Python loop that ran ~1.3M substring comparisons
+    per query on a 259K-chunk index.
+    """
+    n_chunks = path_matrix.shape[0]
+    if not query_tokens or not vocab or n_chunks == 0:
+        return np.zeros(n_chunks, dtype=np.float32)
+
+    n_q = len(query_tokens)
+    n_vocab = len(vocab)
+
+    # Build Q: (n_q, n_vocab) — Q[i, j] = 1 iff query token i substring-matches
+    # vocab token j. The substring rule is bidirectional, matching the original
+    # _path_keyword_score behavior. The scan over vocab is small (~few thousand)
+    # so the Python loop here is acceptable.
+    Q = np.zeros((n_q, n_vocab), dtype=np.float32)
+    for i, q in enumerate(query_tokens):
+        q_lower = q.lower()
+        for tok, col in vocab.items():
+            if q_lower == tok or q_lower in tok or tok in q_lower:
+                Q[i, col] = 1.0
+
+    # path_matrix @ Q.T → (n_chunks, n_q), counts of vocab matches per chunk
+    # per query token. Sparse-times-dense matvec, runs in C with SIMD.
+    matches = path_matrix @ Q.T
+    if sp.issparse(matches):
+        matches = matches.toarray()
+    has_match = matches > 0  # boolean: did query token i match any path token?
+    return has_match.sum(axis=1).astype(np.float32) / n_q
+
+
 def _rank(
     meta: list[tuple],
     all_emb: np.ndarray,
+    path_matrix: sp.csr_matrix,
+    path_vocab: dict[str, int],
     embedding: list[float],
     n_results: int,
     semantic_weight: float,
@@ -210,7 +306,7 @@ def _rank(
     if not meta:
         return {"ids": [[]], "documents": [[]], "metadatas": [[]], "distances": [[]]}
 
-    ids, source_types, source_paths, chunk_idxs, timestamps, path_tokens_list = zip(*meta)
+    ids, source_types, source_paths, chunk_idxs, timestamps, _path_tokens_list = zip(*meta)
 
     q = np.array(embedding, dtype=np.float32)
     norms = np.linalg.norm(all_emb, axis=1) * np.linalg.norm(q)
@@ -218,10 +314,7 @@ def _rank(
     semantic_dist = 1 - np.dot(all_emb, q) / norms  # lower = better
 
     if query_tokens and semantic_weight < 1.0:
-        query_set = set(t.lower() for t in query_tokens)
-        path_scores = np.array([
-            _path_keyword_score(query_set, pt) for pt in path_tokens_list
-        ])
+        path_scores = _path_keyword_scores_vec(query_tokens, path_matrix, path_vocab)
         combined = semantic_weight * semantic_dist + (1 - semantic_weight) * (1 - path_scores)
     else:
         combined = semantic_dist
@@ -243,23 +336,3 @@ def _rank(
         } for i in top_k]],
         "distances": [[round(float(combined[i]), 4) for i in top_k]],
     }
-
-
-def _path_keyword_score(query_set: set[str], path_tokens_str: str) -> float:
-    """Fraction of query tokens that match any path token.
-
-    Uses substring matching in both directions so that e.g. query token "cs107"
-    matches path tokens "cs" and "107" (from a path like "CS 107/"), and query
-    token "cs" matches a path token "cs194w".
-    """
-    if not query_set or not path_tokens_str:
-        return 0.0
-    path_tokens = path_tokens_str.lower().split()
-
-    def _matches(q: str, p: str) -> bool:
-        return q == p or q in p or p in q
-
-    matched = sum(
-        1 for q in query_set if any(_matches(q, p) for p in path_tokens)
-    )
-    return matched / len(query_set)

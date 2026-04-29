@@ -16,6 +16,7 @@ from pydantic import BaseModel
 import store
 import ingest
 import embed
+import rerank
 import search as search_mod
 
 
@@ -40,6 +41,8 @@ log = logging.getLogger("atlas.daemon")
 async def lifespan(app: FastAPI):
     log.info("warming fastembed model...")
     embed.embed_one("warmup")
+    log.info("warming cross-encoder reranker...")
+    rerank.rerank("warmup", ["warmup document"])
     log.info("populating embedding cache (%d chunks)...", store.count())
     con = store._conn()
     store._populate_cache(con)
