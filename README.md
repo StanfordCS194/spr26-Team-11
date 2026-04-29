@@ -222,11 +222,11 @@ npm start
 
 | Action | Key |
 |---|---|
-| Summon overlay | **⌘⇧Space** |
+| Summon overlay | **⌥Space** |
 | Live search | type into the input |
 | LLM-routed ask | **Tab** or **Enter** |
 | Navigate results | **↓** / **↑** |
-| Dismiss | **Esc**, click outside, or **⌘⇧Space** again |
+| Dismiss | **Esc**, click outside, or **⌥Space** again |
 
 Live results appear ~200 ms after you stop typing. The result list shows up to 5 rows at once and scrolls if there are more. Pressing Tab or Enter triggers `/ask`, which uses the local LLM to interpret intent (e.g. "find the folder with my CS 107 homework" routes to a directory search).
 
