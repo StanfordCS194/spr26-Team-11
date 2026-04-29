@@ -31,13 +31,11 @@
 // =============================================================================
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import {
-  MockQuery,
-  MockResult,
-  SourceType,
-} from "./mockData";
+import type { MockQuery, MockResult } from "./lib/types";
+import { shortDate } from "./lib/format";
 import { logEvent } from "./logger";
 import { searchDaemon } from "./api";
+import { ResultRow } from "./components/ResultRow";
 
 export default function App() {
   // ---------------------------------------------------------------------------
@@ -597,105 +595,13 @@ function ResultsList({
   );
 }
 
-// -----------------------------------------------------------------------------
-// ResultRow — one row of the Top K list.
-// -----------------------------------------------------------------------------
-function ResultRow({
-  result,
-  selected,
-  onClick,
-}: {
-  result: MockResult;
-  selected: boolean;
-  onClick: () => void;
-}) {
-  // Class list: base "result-row" plus the selected modifier when active.
-  // Inline template-string concat rather than a helper like classnames —
-  // the prototype has no other use for it, so a dependency is overkill.
-  const className = `result-row${selected ? " is-selected" : ""}`;
-
-  // Chip modifier derives from the SourceType. Lowercased to match the CSS
-  // conventions (`result-chip--mail`, etc.).
-  const chipModifier = sourceChipModifier(result.source);
-
-  // Keep the selected row visible inside the scrollable .results-list. When
-  // the user arrows past the last visible row, the list scrolls just enough
-  // to bring the new selection into view. `block: "nearest"` ensures we
-  // never scroll a row that's already on screen — no jumpiness when the
-  // selection moves between two visible rows.
-  const rowRef = useRef<HTMLLIElement>(null);
-  // useLayoutEffect (not useEffect) so the scroll happens BEFORE the browser
-  // paints. Otherwise the new .is-selected highlight paints at the row's old
-  // off-screen position, the user sees a blue flash, and only then does the
-  // scroll catch up. With useLayoutEffect the className change and the scroll
-  // adjustment land in the same visual frame.
-  useLayoutEffect(() => {
-    if (selected) {
-      rowRef.current?.scrollIntoView({ block: "nearest" });
-    }
-  }, [selected]);
-
-  return (
-    <li
-      ref={rowRef}
-      className={className}
-      role="option"
-      aria-selected={selected}
-      onClick={onClick}
-    >
-      <span className={`result-chip result-chip--${chipModifier}`}>
-        {result.source}
-      </span>
-      <div className="result-row__main">
-        {/* Title and snippet each truncate with ellipsis on overflow — see
-            styles.css. Keeping the structure flat (no extra nesting)
-            reduces the number of layout boundaries the observer has to
-            measure on resize. */}
-        <div className="result-row__title">{result.title}</div>
-        <div className="result-row__snippet">{result.subtitle}</div>
-      </div>
-      <span className="result-row__date">{shortDate(result.date)}</span>
-    </li>
-  );
-}
+// ResultRow is now in ./components/ResultRow.tsx (imported at the top).
 
 // -----------------------------------------------------------------------------
 // Helpers for ResultsList / ResultRow
 // -----------------------------------------------------------------------------
 
-/**
- * Map a SourceType to the CSS modifier slug used on .result-chip. Kept
- * as a tiny lookup (rather than `.toLowerCase()` at the call site) so any
- * future source type with non-trivial casing (e.g. "iMessage" → "imessage")
- * stays isolated to one place.
- */
-function sourceChipModifier(source: SourceType): string {
-  switch (source) {
-    case "Mail":
-      return "mail";
-    case "Messages":
-      return "messages";
-    case "Documents":
-      return "documents";
-    case "Calendar":
-      return "calendar";
-  }
-}
-
-/**
- * Trim a long display date like "Apr 15, 2026 · 11:23 AM" down to just
- * "Apr 15" for the right-aligned date cell in a row. The full date+time is
- * still shown in the expanded preview (Subtask 7), so information is never
- * lost — just compressed for list density.
- *
- * Works by slicing up to the first comma. Any date missing a comma (a
- * pathological mock value we haven't authored) falls back to the raw
- * string rather than returning an empty one.
- */
-function shortDate(date: string): string {
-  const comma = date.indexOf(",");
-  return comma > 0 ? date.slice(0, comma) : date;
-}
+// sourceChipModifier and shortDate are now in ./lib/format.ts.
 
 // =============================================================================
 // ExpandedPreview — full preview of the selected result (Subtask 7).

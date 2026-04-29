@@ -11,7 +11,7 @@
 // for localhost origins on the daemon side (see backend/main.py).
 // =============================================================================
 
-import type { MockQuery, MockResult, SourceType } from "./mockData";
+import type { MockQuery, MockResult, SourceType } from "./lib/types";
 
 const DAEMON_URL = "http://127.0.0.1:8765";
 
