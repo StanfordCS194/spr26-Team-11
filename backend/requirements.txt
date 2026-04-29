@@ -1,0 +1,12 @@
+fastapi
+uvicorn[standard]
+fastembed
+numpy
+pypdf
+python-docx
+typer[all]
+rich
+requests
+# LLM backends (install at least one)
+mlx-lm            # Apple Silicon (recommended)
+llama-cpp-python  # fallback for non-Apple-Silicon
