@@ -1,0 +1,66 @@
+// =============================================================================
+// Atlas — TypeScript config for the RENDERER (React side).
+// =============================================================================
+//
+// The main process has its own config at tsconfig.main.json because it targets
+// Node/Electron's main context, not the browser. Keeping them separate avoids
+// accidental cross-contamination of globals (DOM types vs Node types) and
+// lets each side have its own strictness / target / lib tuning.
+//
+// tsconfig files are parsed as JSONC — real `//` line comments and `/* */`
+// block comments are allowed. (Regular JSON parsers would choke on these, but
+// every tool in the TS ecosystem uses the JSONC parser.)
+// =============================================================================
+{
+  "compilerOptions": {
+    // ----- target + lib ----------------------------------------------------
+    // ES2022 is well-supported by the Chromium shipped with modern Electron.
+    // DOM + DOM.Iterable give us browser types for the renderer (window,
+    // document, HTMLElement, etc).
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+
+    // ----- module system ---------------------------------------------------
+    // Vite uses ESM under the hood; "ESNext" + "bundler" resolution lets us
+    // import .ts/.tsx cleanly without file extensions and without tsc trying
+    // to rewrite paths at build time.
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+
+    // ----- JSX -------------------------------------------------------------
+    // "react-jsx" uses the automatic runtime — no need to
+    // `import React from "react"` in every file.
+    "jsx": "react-jsx",
+
+    // ----- strictness ------------------------------------------------------
+    // Strict mode on. Small upfront cost, much better type safety as the
+    // code grows. noUnused* catches dead code early; noFallthrough catches
+    // accidental fallthrough in switch statements.
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+
+    // ----- interop ---------------------------------------------------------
+    // esModuleInterop + allowSyntheticDefaultImports smooth over CJS/ESM so
+    // `import x from "y"` works even when "y" is a CommonJS package.
+    // resolveJsonModule lets us `import foo from "./bar.json"` if needed.
+    // isolatedModules ensures every file can be transpiled independently —
+    // required by Vite's per-file compilation model.
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+
+    // ----- emit ------------------------------------------------------------
+    // Vite handles the actual emit; tsc here is only for type-checking.
+    // skipLibCheck avoids spending time validating node_modules types (we
+    // trust the libraries we install).
+    "noEmit": true,
+    "skipLibCheck": true
+  },
+
+  // Only src/ — everything else (main.ts, vite config, etc.) is either in
+  // the other tsconfig or handled by Vite directly.
+  "include": ["src"]
+}

@@ -1,0 +1,54 @@
+// =============================================================================
+// Atlas — TypeScript config for the MAIN process (Electron's Node-side entry).
+// =============================================================================
+//
+// Unlike the renderer config, this one EMITS real JS files to dist-electron/,
+// because Electron's main process runs compiled JS directly — there is no
+// Vite in this pipeline. The output path is aligned with package.json#main.
+//
+// Comments here use JSONC line-comment syntax (tsc parses tsconfig as JSONC).
+// =============================================================================
+{
+  "compilerOptions": {
+    // ----- target + module -------------------------------------------------
+    // CommonJS because Electron's main process still uses CJS by default
+    // (require/exports). ES2022 target keeps modern syntax (async/await,
+    // optional chaining, nullish coalescing, etc.) in the emitted output.
+    "target": "ES2022",
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+
+    // ----- lib -------------------------------------------------------------
+    // No DOM lib here — main process has no window/document. Just ES builtins
+    // and Node globals (__dirname, process, Buffer) via @types/node.
+    "lib": ["ES2022"],
+    "types": ["node"],
+
+    // ----- strictness ------------------------------------------------------
+    // Same strictness as the renderer config — consistent rules across the
+    // whole codebase, so a dev switching between main and renderer doesn't
+    // hit different lint behaviour.
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+
+    // ----- emit ------------------------------------------------------------
+    // We DO emit here. outDir aligns with the "main" field in package.json.
+    // rootDir: "." because main.ts sits at the project root (not under src/).
+    // Source maps help stack traces in the Electron main-process console
+    // point back at the .ts line numbers we actually wrote.
+    "outDir": "dist-electron",
+    "rootDir": ".",
+    "sourceMap": true
+  },
+
+  // main.ts is the Electron main-process entry; preload.ts runs in the
+  // renderer process but with Node privileges and exposes a tiny IPC bridge
+  // (window.atlasAPI) via contextBridge. Both compile into dist-electron/.
+  // Additional IPC helpers (e.g. for the logger in Subtask 9) will be added
+  // here when they arrive.
+  "include": ["main.ts", "preload.ts"]
+}

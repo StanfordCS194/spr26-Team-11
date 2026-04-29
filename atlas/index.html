@@ -1,0 +1,44 @@
+<!doctype html>
+<!--
+  Atlas renderer entry HTML.
+
+  Vite looks for index.html at the project root (atlas/) by default. In dev,
+  Vite serves this file from memory with HMR wired in. In prod, Vite emits a
+  processed copy into dist/index.html with hashed asset URLs, and Electron's
+  main process loads that file directly via the file:// protocol.
+
+  We keep this file intentionally minimal — almost every visual decision
+  belongs in React/CSS, not here. The only job of this document is to:
+    1. Mount a single <div id="root"> that React takes over.
+    2. Pull in the renderer entry module (src/main.tsx), which Vite compiles.
+-->
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <!--
+      Content-Security-Policy: restrict what the renderer can load. For now
+      we allow inline styles (needed for React's dev fast-refresh overlay) and
+      connections to the Vite dev server for HMR. We'll tighten this before
+      any real shipping build.
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ws://localhost:5173 http://localhost:5173"
+    />
+    <title>Atlas</title>
+  </head>
+  <body>
+    <!--
+      Single mount point. React 18's createRoot targets this node. Keeping it
+      empty (no fallback content) is fine because the overlay is only ever
+      shown inside Electron, where the bundle is guaranteed to be present.
+    -->
+    <div id="root"></div>
+
+    <!--
+      type="module" is required for Vite's ESM dev-server to work. The path is
+      relative so it works identically under http:// (dev) and file:// (prod).
+    -->
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
