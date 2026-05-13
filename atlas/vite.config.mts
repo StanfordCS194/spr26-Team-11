@@ -16,6 +16,12 @@ export default defineConfig({
   base: "./",
 
   server: {
+    // Bind explicitly to IPv4 127.0.0.1. Vite 6 defaults to IPv6 (::1) only,
+    // but `wait-on http://localhost:5173` in package.json resolves via Node's
+    // DNS which prefers IPv4 on macOS — so wait-on keeps polling a port that
+    // isn't bound on IPv4, and Electron sits idle for tens of seconds.
+    // Pinning to 127.0.0.1 makes wait-on's first probe succeed instantly.
+    host: "127.0.0.1",
     // Fixed port so the Electron main process knows exactly where to wait.
     // strictPort: fail instead of silently picking a different port — we want a
     // hard error if something's already using 5173 so the user notices.
@@ -27,5 +33,13 @@ export default defineConfig({
     // Matches the path Electron's main process loads in production mode.
     outDir: "dist",
     emptyOutDir: true,
+  },
+
+  optimizeDeps: {
+    // Declare deps explicitly so Vite skips the import-scanning pass on
+    // every cold start. Without this, Vite walks the renderer's import
+    // graph to discover what to pre-bundle, which is slow on a freshly
+    // installed node_modules where Spotlight may also be reading files.
+    include: ["react", "react-dom", "react-dom/client"],
   },
 });

@@ -1,0 +1,66 @@
+[
+  {
+    "id": "q1-cs107-homework",
+    "endpoint": "search",
+    "rank": -1,
+    "latency_ms": 8444.2,
+    "n_results": 10,
+    "top_paths": [
+      "/Users/tayosobomehin/Desktop/DESKTOP/Stanford/1 Frosh/1 Frosh Autumn/CS 106B/2 - Fun with Collections/res/website.txt",
+      "/Users/tayosobomehin/Desktop/DESKTOP/Stanford/2 Soph/2 Soph Winter/CS 161/Psets/CS161_PS6.pdf",
+      "/Users/tayosobomehin/Desktop/DESKTOP/Stanford/2 Soph/2 Soph Winter/CS 161/Psets/CS161_PS5.pdf"
+    ],
+    "error": null
+  },
+  {
+    "id": "q2-ryan-rollins",
+    "endpoint": "search",
+    "rank": -1,
+    "latency_ms": 5867.3,
+    "n_results": 10,
+    "top_paths": [
+      "+16503086583",
+      "+16505220724",
+      "pablom.noel@gmail.com"
+    ],
+    "error": null
+  },
+  {
+    "id": "q3-pearx",
+    "endpoint": "search",
+    "rank": -1,
+    "latency_ms": 607.6,
+    "n_results": 2,
+    "top_paths": [
+      "/Users/tayosobomehin/Desktop/DESKTOP/Stanford/3 Junior/2 Junior Winter/cs124/pa3-information-retrieval/data/ProjectGutenberg/raw/Getting Acquainted with the Trees - J Horace McFarland 28764.txt",
+      "/Users/tayosobomehin/Desktop/DESKTOP/Code/Swift/Spike Rush/spike rush 1_files/ar-detail-all.js"
+    ],
+    "error": null
+  },
+  {
+    "id": "q4-maxwell-demon",
+    "endpoint": "search",
+    "rank": -1,
+    "latency_ms": 518.7,
+    "n_results": 6,
+    "top_paths": [
+      "/Users/tayosobomehin/Desktop/DESKTOP/Stanford/1 Frosh/2 Frosh Winter/CS 107/cs107/assign1/maxwell_demon.c",
+      "/Users/tayosobomehin/Desktop/DESKTOP/Stanford/1 Frosh/2 Frosh Winter/CS 107/cs107/assign1/maxwell_demon.h",
+      "/Users/tayosobomehin/Desktop/DESKTOP/Stanford/3 Junior/2 Junior Winter/cs124/pa3-information-retrieval/data/ProjectGutenberg/raw/Notre-Dame de Paris - Victor Hugo 2610.txt"
+    ],
+    "error": null
+  },
+  {
+    "id": "q5-trainify-folder",
+    "endpoint": "ask",
+    "rank": 1,
+    "latency_ms": 20360.4,
+    "n_results": 10,
+    "top_paths": [
+      "/Users/tayosobomehin/Desktop/DESKTOP/Documents/Legal/Trainify",
+      "/Users/tayosobomehin/Desktop/DESKTOP/Code/trainify-handover/Basketball",
+      "/Users/tayosobomehin/Desktop/DESKTOP/Code/trainify-handover"
+    ],
+    "error": null
+  }
+]

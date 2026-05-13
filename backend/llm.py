@@ -1,49 +1,80 @@
 # -*- coding: utf-8 -*-
 """
-Local LLM for query parsing.
-Auto-detects backend: mlx-lm on Apple Silicon, llama-cpp-python otherwise.
+Query parser for `/ask`. Two modes, chosen at module import time from
+`config.load_user_config()`:
+
+  - local (default): Qwen2.5-0.5B-Instruct (4-bit MLX), output constrained
+    to a valid JSON object via the `outlines` library. ~400 MB resident.
+  - cloud (opt-in): OpenAI-compatible chat-completions endpoint (default
+    Groq) with `response_format={"type": "json_object"}`. ~0 MB resident.
+
+Only the active mode's heavy deps are imported. Switching modes requires a
+daemon restart. The API key for cloud mode is read from the macOS Keychain
+via `keyring`; the CLI's `config set-cloud-parser true` flow prompts for it.
 """
 import json
+import os
 import platform
-import re
 from dataclasses import dataclass
-from pathlib import Path
+from typing import Literal
 
-from config import DATA_DIR
+from pydantic import BaseModel, Field
 
-MODEL_DIR = DATA_DIR / "models"
-_MODEL_ID_MLX = "mlx-community/Phi-3-mini-4k-instruct-4bit"
-_MODEL_ID_GGUF_REPO = "bartowski/Phi-3-mini-4k-instruct-GGUF"
-_MODEL_ID_GGUF_FILE = "Phi-3-mini-4k-instruct-Q4_K_M.gguf"
+from config import (
+    KEYCHAIN_SERVICE,
+    KEYCHAIN_USERNAME,
+    load_user_config,
+)
 
-# Phi-3 chat template
-_PROMPT_TEMPLATE = """\
-<|system|>
-You are a search query parser. Given a user's input, extract the core search terms and intent.
-Output ONLY a single JSON object — no explanation, no markdown.
 
-Keys:
-- search_terms: string of core search terms, stripped of conversational words (please, find me, show me, can you, where is, what is, look for)
-- intent: one of "search" (find relevant content), "find_file" (locate specific files), "find_directory" (locate a folder)
-- source_filter: one of "filesystem", "imessage", or null (search all sources)
+# ---------------------------------------------------------------------------
+# Mode + shared prompt
+# ---------------------------------------------------------------------------
 
-Examples:
-Input: please find the directory containing my cs107 homework
-Output: {{"search_terms": "cs107 homework", "intent": "find_directory", "source_filter": null}}
+_config = load_user_config()
+_MODE = "cloud" if _config["cloud_parser"] else "local"
 
-Input: what files do I have about machine learning
-Output: {{"search_terms": "machine learning", "intent": "find_file", "source_filter": "filesystem"}}
+_QWEN_MODEL_ID = "mlx-community/Qwen2.5-0.5B-Instruct-4bit"
 
-Input: find messages from Alex about the meeting
-Output: {{"search_terms": "Alex meeting", "intent": "search", "source_filter": "imessage"}}
+_SYSTEM_PROMPT = (
+    "You are a search query parser. Extract the core search terms and intent "
+    "from the user's input. Output only a JSON object with three fields: "
+    "search_terms (string of core terms, stripped of conversational filler), "
+    'intent (one of "search", "find_file", "find_directory"), and '
+    'source_filter (one of "filesystem", "imessage", or null).'
+)
 
-Input: dynamic memory allocation
-Output: {{"search_terms": "dynamic memory allocation", "intent": "search", "source_filter": null}}
-<|end|>
-<|user|>
-Input: {query}
-Output: \
-"""
+_FEW_SHOT = [
+    ("please find the directory containing my cs107 homework",
+     {"search_terms": "cs107 homework", "intent": "find_directory", "source_filter": None}),
+    ("what files do I have about machine learning",
+     {"search_terms": "machine learning", "intent": "find_file", "source_filter": "filesystem"}),
+    ("find messages from Alex about the meeting",
+     {"search_terms": "Alex meeting", "intent": "search", "source_filter": "imessage"}),
+    ("dynamic memory allocation",
+     {"search_terms": "dynamic memory allocation", "intent": "search", "source_filter": None}),
+]
+
+
+def _build_messages(user_input: str) -> list[dict]:
+    """Build the chat-format messages list shared by both modes."""
+    messages: list[dict] = [{"role": "system", "content": _SYSTEM_PROMPT}]
+    for example_in, example_out in _FEW_SHOT:
+        messages.append({"role": "user", "content": example_in})
+        messages.append({"role": "assistant", "content": json.dumps(example_out)})
+    messages.append({"role": "user", "content": user_input.strip()})
+    return messages
+
+
+# ---------------------------------------------------------------------------
+# Pydantic schema — same shape used by outlines (local) and as a sanity
+# check on cloud responses.
+# ---------------------------------------------------------------------------
+
+class _ParsedSchema(BaseModel):
+    search_terms: str = Field(default="")
+    intent: Literal["search", "find_file", "find_directory"] = "search"
+    source_filter: Literal["filesystem", "imessage"] | None = None
 
 
 @dataclass
@@ -53,110 +84,112 @@ class ParsedQuery:
     source_filter: str | None  # "filesystem" | "imessage" | None
 
 
+def _to_dataclass(schema: _ParsedSchema, fallback_terms: str) -> ParsedQuery:
+    return ParsedQuery(
+        search_terms=schema.search_terms or fallback_terms,
+        intent=schema.intent,
+        source_filter=schema.source_filter,
+    )
+
+
 # ---------------------------------------------------------------------------
-# Backend detection and lazy model loading
+# Local backend — Qwen2.5-0.5B via mlx-lm, JSON-constrained via outlines.
+# Lazy-loaded on first parse_query() call.
 # ---------------------------------------------------------------------------
 
-_backend: str | None = None
-_model = None
-_tokenizer = None
+_local_generator = None  # outlines.Generator instance
 
 
-def _detect_backend() -> str:
-    if platform.machine() == "arm64":
-        try:
-            import mlx_lm  # noqa: F401
-            return "mlx"
-        except ImportError:
-            pass
-    try:
-        import llama_cpp  # noqa: F401
-        return "llamacpp"
-    except ImportError:
-        raise RuntimeError(
-            "No LLM backend found.\n"
-            "  Apple Silicon: pip install mlx-lm\n"
-            "  Other:         pip install llama-cpp-python"
-        )
-
-
-def _load_model():
-    global _backend, _model, _tokenizer
-    if _model is not None:
+def _load_local() -> None:
+    global _local_generator
+    if _local_generator is not None:
         return
-
-    _backend = _detect_backend()
-    MODEL_DIR.mkdir(parents=True, exist_ok=True)
-
-    if _backend == "mlx":
-        from mlx_lm import load
-        print(f"Loading Phi-3-mini via MLX (first run downloads ~2.3 GB to ~/.atlas/models/)...")
-        _model, _tokenizer = load(_MODEL_ID_MLX)
-        print("Model ready.")
-    else:
-        from llama_cpp import Llama
-        from huggingface_hub import hf_hub_download
-        model_path = MODEL_DIR / _MODEL_ID_GGUF_FILE
-        if not model_path.exists():
-            print("Downloading Phi-3-mini GGUF (~2.3 GB, one-time)...")
-            hf_hub_download(
-                repo_id=_MODEL_ID_GGUF_REPO,
-                filename=_MODEL_ID_GGUF_FILE,
-                local_dir=str(MODEL_DIR),
-            )
-            print("Download complete.")
-        _model = Llama(
-            model_path=str(model_path),
-            n_ctx=512,
-            n_gpu_layers=-1,  # use all GPU layers available
-            verbose=False,
+    if platform.machine() != "arm64":
+        raise RuntimeError(
+            "Local LLM parser requires Apple Silicon (mlx-lm). "
+            "On other platforms, enable cloud mode: cli.py config set-cloud-parser true"
         )
+    import outlines
+    from mlx_lm import load as mlx_load
+
+    model, tokenizer = mlx_load(_QWEN_MODEL_ID)
+    mlx_model = outlines.from_mlxlm(model, tokenizer)
+    _local_generator = outlines.Generator(mlx_model, output_type=_ParsedSchema)
 
 
-def _generate(prompt: str) -> str:
-    _load_model()
-    if _backend == "mlx":
-        from mlx_lm import generate
-        return generate(_model, _tokenizer, prompt=prompt, max_tokens=120, verbose=False)
-    else:
-        result = _model(prompt, max_tokens=120, stop=["<|end|>", "<|user|>", "\n\n"], echo=False)
-        return result["choices"][0]["text"]
+def _parse_local(user_input: str) -> ParsedQuery:
+    _load_local()
+    messages = _build_messages(user_input)
+    # outlines accepts a Chat input that triggers tokenizer.apply_chat_template
+    # under the hood, but we already have a list of dicts — pass it as a Chat.
+    from outlines.inputs import Chat
+    raw = _local_generator(Chat(messages), max_tokens=120)
+    schema = _ParsedSchema.model_validate_json(raw)
+    return _to_dataclass(schema, user_input)
 
 
 # ---------------------------------------------------------------------------
-# JSON extraction and query parsing
+# Cloud backend — OpenAI-compatible chat completions (Groq by default).
+# No persistent state, just an HTTP request per /ask call.
 # ---------------------------------------------------------------------------
 
-def _extract_json(text: str) -> dict | None:
-    match = re.search(r'\{[^}]+\}', text, re.DOTALL)
-    if not match:
-        return None
-    try:
-        return json.loads(match.group())
-    except json.JSONDecodeError:
-        return None
+def _get_api_key() -> str:
+    """Pull the API key from the Keychain. Env var override for testing."""
+    env_key = os.environ.get("ATLAS_CLOUD_API_KEY")
+    if env_key:
+        return env_key
+    import keyring
+    key = keyring.get_password(KEYCHAIN_SERVICE, KEYCHAIN_USERNAME)
+    if not key:
+        raise RuntimeError(
+            "Cloud parser enabled but no API key in Keychain. "
+            "Run: cli.py config set-cloud-parser true"
+        )
+    return key
+
+
+def _parse_cloud(user_input: str) -> ParsedQuery:
+    import requests
+
+    endpoint = _config["cloud_endpoint"].rstrip("/")
+    payload = {
+        "model": _config["cloud_model"],
+        "messages": _build_messages(user_input),
+        "response_format": {"type": "json_object"},
+        "max_tokens": 120,
+        "temperature": 0.0,
+    }
+    headers = {
+        "Authorization": f"Bearer {_get_api_key()}",
+        "Content-Type": "application/json",
+    }
+    r = requests.post(
+        f"{endpoint}/chat/completions",
+        json=payload,
+        headers=headers,
+        timeout=10.0,
+    )
+    r.raise_for_status()
+    content = r.json()["choices"][0]["message"]["content"]
+    schema = _ParsedSchema.model_validate_json(content)
+    return _to_dataclass(schema, user_input)
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+def mode() -> str:
+    """Return 'local' or 'cloud' — the active parser mode at startup."""
+    return _MODE
 
 
 def parse_query(text: str) -> ParsedQuery:
-    """Parse a natural language query into structured search parameters."""
-    prompt = _PROMPT_TEMPLATE.format(query=text.strip())
-    output = _generate(prompt)
-    data = _extract_json(output)
+    """Parse a natural-language query into structured search parameters.
 
-    if data is None:
-        # Fallback: treat full input as search terms
-        return ParsedQuery(search_terms=text, intent="search", source_filter=None)
-
-    intent = data.get("intent", "search")
-    if intent not in ("search", "find_file", "find_directory"):
-        intent = "search"
-
-    source = data.get("source_filter")
-    if source not in ("filesystem", "imessage", None):
-        source = None
-
-    return ParsedQuery(
-        search_terms=data.get("search_terms", text) or text,
-        intent=intent,
-        source_filter=source,
-    )
+    Raises on backend failure; callers are expected to catch and fall back
+    (search.ask() falls back to plain search with the raw input).
+    """
+    if _MODE == "cloud":
+        return _parse_cloud(text)
+    return _parse_local(text)

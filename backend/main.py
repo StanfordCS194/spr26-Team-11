@@ -1,7 +1,19 @@
 import os
-# Skip HuggingFace revision check on every model load — saves ~6 min on warm
-# starts. Trade-off: model updates require a manual `huggingface-cli download`.
-os.environ.setdefault("HF_HUB_OFFLINE", "1")
+import glob
+# Pin fastembed's cache to ~/.atlas/models so models survive macOS's
+# periodic cleanup of /var/folders/.../T/ (the default tempfile location).
+_FASTEMBED_CACHE = os.path.expanduser("~/.atlas/models")
+os.environ.setdefault("FASTEMBED_CACHE_PATH", _FASTEMBED_CACHE)
+# Only enable offline mode if both fastembed models are already extracted in
+# the cache. On a fresh cache (or after a wipe), leave offline mode off so the
+# warmup calls in lifespan() can populate it on first run. Detection is
+# conservative: we look for ≥2 .onnx files (one per model) anywhere under the
+# cache directory.
+_cached_onnx = glob.glob(os.path.join(_FASTEMBED_CACHE, "**", "*.onnx"), recursive=True)
+if len(_cached_onnx) >= 2:
+    # Skip HuggingFace revision check on every model load — saves ~6 min on warm
+    # starts. Trade-off: model updates require a manual `huggingface-cli download`.
+    os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
 import logging
 import threading
@@ -40,6 +52,8 @@ log = logging.getLogger("atlas.daemon")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    if len(_cached_onnx) < 2:
+        log.info("downloading models on first run (~160 MB, one-time)...")
     log.info("warming fastembed model...")
     embed.embed_one("warmup")
     log.info("warming cross-encoder reranker...")
@@ -48,20 +62,23 @@ async def lifespan(app: FastAPI):
     con = store._conn()
     store._populate_cache(con)
     con.close()
-    # LLM warmup runs in a background thread — Phi-3-mini load is intermittently
-    # slow (a few minutes) and would otherwise block the daemon from accepting
-    # any requests, including /search which doesn't need the LLM at all. /ask
-    # callers will pay the load cost on the first call instead.
-    def _warm_llm():
-        try:
-            from llm import parse_query
-            parse_query("warmup")
-            log.info("LLM warmup complete (background)")
-        except Exception as e:
-            log.warning("LLM warmup skipped: %s", e)
+    # LLM warmup runs in a background thread so /search is reachable
+    # immediately. In cloud-parser mode no local model is loaded at all —
+    # the first /ask hits the cloud endpoint directly.
+    from llm import mode as llm_mode
+    if llm_mode() == "local":
+        def _warm_llm():
+            try:
+                from llm import parse_query
+                parse_query("warmup")
+                log.info("LLM warmup complete (background)")
+            except Exception as e:
+                log.warning("LLM warmup skipped: %s", e)
 
-    threading.Thread(target=_warm_llm, daemon=True).start()
-    log.info("daemon ready (LLM warming in background)")
+        threading.Thread(target=_warm_llm, daemon=True).start()
+        log.info("daemon ready (local LLM warming in background)")
+    else:
+        log.info("daemon ready (cloud parser mode — no local LLM loaded)")
     yield
 
 
@@ -185,14 +202,18 @@ def search(
     limit: int = 10,
     source: str | None = None,
 ):
+    log.info("searching: %s", q)
     results = search_mod.search(q, n_results=limit, source_filter=source)
+    log.info("returned %d results", len(results))
     return [SearchResult(source_type=r.source_type, source_path=r.source_path, snippet=r.snippet, score=r.score) for r in results]
 
 
 @app.post("/ask", response_model=list[SearchResult])
 def ask(req: AskRequest):
     """Conversational query parsed by local LLM."""
+    log.info("ask: %s", req.query)
     results = search_mod.ask(req.query, n_results=req.limit)
+    log.info("returned %d results", len(results))
     return [SearchResult(source_type=r.source_type, source_path=r.source_path, snippet=r.snippet, score=r.score) for r in results]
 
 
@@ -205,6 +226,13 @@ def clear():
 @app.get("/status")
 def status():
     return {"total_chunks": store.count()}
+
+
+@app.get("/config")
+def get_config():
+    """Surface the active parser mode so the UI can show a cloud badge."""
+    from llm import mode as llm_mode
+    return {"parser_mode": llm_mode()}
 
 
 if __name__ == "__main__":

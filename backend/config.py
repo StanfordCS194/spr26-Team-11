@@ -1,3 +1,5 @@
+import json
+import os
 from pathlib import Path
 
 DATA_DIR = Path.home() / ".atlas"
@@ -19,3 +21,46 @@ DAEMON_PORT = 8765
 DAEMON_URL = f"http://{DAEMON_HOST}:{DAEMON_PORT}"
 DAEMON_PID_FILE = DATA_DIR / "daemon.pid"
 DAEMON_LOG_FILE = DATA_DIR / "daemon.log"
+
+# ---------------------------------------------------------------------------
+# User config (~/.atlas/config.json) — controls cloud-vs-local LLM parser.
+# Edited via `cli.py config ...` commands. Daemon reads at startup; mode
+# changes require a daemon restart.
+# ---------------------------------------------------------------------------
+USER_CONFIG_FILE = DATA_DIR / "config.json"
+
+_DEFAULT_USER_CONFIG = {
+    "cloud_parser": False,
+    "cloud_endpoint": "https://api.groq.com/openai/v1",
+    "cloud_model": "llama-3.1-8b-instant",
+}
+
+
+def load_user_config() -> dict:
+    """Load ~/.atlas/config.json, filling in defaults for missing keys.
+
+    Env var ATLAS_CLOUD_PARSER (0/1) overrides the file's cloud_parser
+    setting — useful for ad-hoc testing without editing the file.
+    """
+    config = dict(_DEFAULT_USER_CONFIG)
+    if USER_CONFIG_FILE.exists():
+        try:
+            config.update(json.loads(USER_CONFIG_FILE.read_text()))
+        except (json.JSONDecodeError, OSError):
+            pass
+    env_override = os.environ.get("ATLAS_CLOUD_PARSER")
+    if env_override is not None:
+        config["cloud_parser"] = env_override.strip() in ("1", "true", "True", "yes")
+    return config
+
+
+def save_user_config(config: dict) -> None:
+    """Persist a config dict to ~/.atlas/config.json, creating parent dirs."""
+    USER_CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    USER_CONFIG_FILE.write_text(json.dumps(config, indent=2) + "\n")
+
+
+# Keychain storage location for the cloud-parser API key. Stored via the
+# `keyring` library; on macOS this lands in the user's login keychain.
+KEYCHAIN_SERVICE = "atlas"
+KEYCHAIN_USERNAME = "cloud_api_key"

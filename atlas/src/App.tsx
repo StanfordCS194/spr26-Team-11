@@ -34,7 +34,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { MockQuery, MockResult } from "./lib/types";
 import { shortDate } from "./lib/format";
 import { logEvent } from "./logger";
-import { searchDaemon } from "./api";
+import { askDaemon, fetchDaemonConfig, searchDaemon } from "./api";
 import { ResultRow } from "./components/ResultRow";
 
 export default function App() {
@@ -64,6 +64,44 @@ export default function App() {
   // indicator. Set to true the moment the debounce timer fires (not on
   // every keystroke), so the spinner doesn't flicker during fast typing.
   const [isSearching, setIsSearching] = useState<boolean>(false);
+  // Separate flag for an in-flight /ask request. /ask is triggered explicitly
+  // by Tab or Enter (not by typing) and is slower than /search because it
+  // routes through the local LLM, so the UI shows the loading indicator
+  // while it's running just like the search path does.
+  const [isAsking, setIsAsking] = useState<boolean>(false);
+  // Holds the AbortController for the current /ask call so a second
+  // Tab/Enter press cancels the previous request instead of stacking.
+  const askControllerRef = useRef<AbortController | null>(null);
+
+  // Parser mode reported by the daemon. Drives the "☁" badge in the search
+  // bar so the user can see at a glance whether queries are being parsed
+  // on-device or sent to the configured cloud endpoint. Fetched once on
+  // mount; daemon restart is required to switch modes anyway.
+  const [parserMode, setParserMode] = useState<"local" | "cloud">("local");
+  useEffect(() => {
+    fetchDaemonConfig().then((c) => setParserMode(c.parser_mode));
+  }, []);
+
+  const triggerAsk = (): void => {
+    const trimmed = query.trim();
+    if (!trimmed || isAsking) return;
+    askControllerRef.current?.abort();
+    const controller = new AbortController();
+    askControllerRef.current = controller;
+    setIsAsking(true);
+    askDaemon(trimmed, controller.signal)
+      .then((result) => {
+        // null = no results; treat the same as a search returning nothing.
+        setMatchedQuery(result);
+      })
+      .catch((e: Error) => {
+        if (e.name === "AbortError") return;
+        console.error("[atlas] ask failed:", e);
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setIsAsking(false);
+      });
+  };
 
   useEffect(() => {
     if (!query.trim()) {
@@ -217,6 +255,20 @@ export default function App() {
         return;
       }
 
+      // Tab and Enter trigger an LLM-routed /ask request. Bound at the
+      // window level (rather than only on the input) so they fire even if
+      // focus has drifted into a result row. preventDefault on Tab stops
+      // the browser from shifting focus through the overlay; on Enter it
+      // stops any default form-submit behaviour from the input.
+      // Triggers regardless of whether a /search match is already on
+      // screen, so users can refine an existing result set with /ask.
+      if (e.key === "Tab" || e.key === "Enter") {
+        if (!query.trim()) return;
+        e.preventDefault();
+        triggerAsk();
+        return;
+      }
+
       if (!matchedQuery) return;
 
       if (e.key === "ArrowDown") {
@@ -230,18 +282,16 @@ export default function App() {
         e.preventDefault();
         const next = Math.max(0, selectedIndex - 1);
         if (next !== selectedIndex) selectResult(next);
-      } else if (e.key === "Enter") {
-        e.preventDefault();
-        openSelectedResult();
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
     // Including selectedIndex in the deps so the handler always sees the
-    // current selection for clamp math and Enter-to-open. React will
-    // re-register the listener on each move — still very cheap.
+    // current selection for clamp math. query is included so Tab/Enter
+    // see the latest typed input. React re-registers the listener on each
+    // change — still very cheap.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [matchedQuery, selectedIndex]);
+  }, [matchedQuery, selectedIndex, query]);
 
   // ---------------------------------------------------------------------------
   // "Reset on re-open" hook.
@@ -430,6 +480,15 @@ export default function App() {
          * clickable. The visible label is lowercase to match macOS's
          * modifier-key badge convention ("esc", "return", etc.).
          */}
+        {parserMode === "cloud" && (
+          <span
+            className="cloud-badge"
+            title="Cloud parser mode — queries are sent to the configured endpoint for intent parsing."
+            aria-label="Cloud parser enabled"
+          >
+            ☁
+          </span>
+        )}
         <button
           className="esc-badge"
           type="button"
@@ -448,11 +507,11 @@ export default function App() {
          their query is being processed even before any results arrive
          (and during refinements over an existing matched query).
          ----------------------------------------------------------------- */}
-      {isSearching && (
+      {(isSearching || isAsking) && (
         <div
           className="search-loading"
           role="status"
-          aria-label="Searching..."
+          aria-label={isAsking ? "Asking Atlas..." : "Searching..."}
         >
           <span className="search-loading-dot" />
           <span className="search-loading-dot" />

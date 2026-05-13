@@ -1,6 +1,6 @@
 # Atlas
 
-A locally-run, privacy-first AI search overlay for macOS. Press a global hotkey, type a question, get ranked results from your filesystem and iMessages — all retrieved and ranked on-device, no data leaves your machine.
+A locally-run, privacy-first AI search overlay for macOS. Press a global hotkey, type a question, get ranked results from your filesystem and iMessages. **By default, all retrieval, ranking, and query parsing happen on-device — no data leaves your machine.** An optional cloud parser (Groq-compatible) can be enabled for users who prefer it; see "Optional: cloud query parser" below.
 
 **Team SSH**: Andrew Grant, Ji Qi Ni, Nick Donaldson, Olatayo Sobomehin, Ose Okhihan.
 
@@ -62,7 +62,8 @@ The backend is a Python FastAPI daemon that indexes local data, embeds it for se
 - **fastembed** — ONNX-Runtime embeddings (`all-MiniLM-L6-v2`, 384-dim). Replaced sentence-transformers for ~8× faster cold start.
 - **SQLite + numpy + scipy** — lightweight vector store. SQLite holds chunks, blobs, and metadata; numpy provides cosine search; scipy sparse matrices accelerate path-keyword scoring.
 - **fastembed cross-encoder** — `Xenova/ms-marco-MiniLM-L-6-v2` for two-stage re-ranking.
-- **mlx-lm + Phi-3-mini-4k-instruct (4-bit)** — local LLM for query parsing on Apple Silicon. ~2.3 GB on disk.
+- **mlx-lm + Qwen2.5-0.5B-Instruct (4-bit)** — local LLM for query parsing on Apple Silicon. ~280 MB on disk. Output is constrained to a valid JSON schema via the `outlines` library, so the regex-extract fallback rarely fires.
+- **(optional) cloud parser** — an OpenAI-compatible chat-completions endpoint (default Groq + `llama-3.1-8b-instant`, free tier) replaces the local Qwen when enabled via `cli.py config set-cloud-parser true`. API key stored in the macOS Keychain via `keyring`. Off by default — when off, no network calls leave the daemon.
 - **Typer + Rich** — CLI framework and pretty terminal output.
 
 ### Architecture
@@ -75,7 +76,7 @@ backend/
 ├── ingest.py      File walker, parser, chunker, path-context extractor
 ├── embed.py       fastembed wrapper (lazy-loaded singleton)
 ├── rerank.py      Cross-encoder wrapper (lazy-loaded singleton)
-├── llm.py         Phi-3-mini wrapper for /ask query parsing
+├── llm.py         Query-parser: Qwen2.5-0.5B (local) or OpenAI-compatible (cloud)
 ├── store.py       SQLite store + in-memory cache + sparse path-keyword matrix
 └── search.py      Hybrid retrieval + dedup + cross-encoder rerank + ask routing
 ```
@@ -100,7 +101,7 @@ The daemon binds to `127.0.0.1:8765`, holds models warm in memory, and processes
 
 8. **Cross-encoder re-ranking.** Top-50 candidates from the fast bi-encoder are re-scored by a cross-encoder that processes (query, document) pairs jointly. Dramatically more accurate at the cost of ~700 ms per query.
 
-9. **LLM query parsing on `/ask`.** Phi-3-mini parses conversational queries into `{search_terms, intent, source_filter}` and routes to `search` / `find_files` / `find_directories`. Triggered explicitly by Tab or Enter so the as-you-type fast path stays cheap.
+9. **LLM query parsing on `/ask`.** Qwen2.5-0.5B (local default) or an OpenAI-compatible cloud endpoint parses conversational queries into `{search_terms, intent, source_filter}` and routes to `search` / `find_files` / `find_directories`. Triggered explicitly by Tab or Enter so the as-you-type fast path stays cheap. JSON output is schema-constrained (`outlines` for local, `response_format` for cloud), so malformed responses are essentially impossible.
 
 ### Performance characteristics
 
@@ -112,7 +113,19 @@ The daemon binds to `127.0.0.1:8765`, holds models warm in memory, and processes
 | `/ask` warm | ~1–2 s (LLM parse + retrieval) |
 | Full reindex (≈2 K files / 260 K chunks) | ~1.5–2 hr |
 
-`HF_HUB_OFFLINE=1` is set at the top of `main.py` so the daemon never blocks on Hugging Face revision checks. The LLM warmup runs in a background thread so `/search` is reachable immediately even if the LLM is still loading.
+`main.py` sets `HF_HUB_OFFLINE=1` automatically once the fastembed cache (`~/.atlas/models/`) is populated, so subsequent daemon starts never block on Hugging Face revision checks. On a fresh cache the daemon downloads the models on first run instead. The LLM warmup runs in a background thread so `/search` is reachable immediately even if the LLM is still loading; in cloud-parser mode no local LLM is loaded at all.
+
+### Quality benchmark
+
+`backend/eval/` holds a small benchmark used to measure search-quality changes. Five hand-picked queries with known expected matches; the runner records the rank of the expected match in top-10 (0 = top hit, -1 = miss) plus HTTP latency. With the daemon running:
+
+```bash
+cd ~/Desktop/cs194w/backend
+.venv/bin/python eval/run.py --label baseline    # save as eval/runs/<timestamp>-baseline.json
+.venv/bin/python eval/run.py --label with-hyde   # after a change; compare with diff
+```
+
+Add or refine queries in `eval/queries.py`. Match types supported: `path_exact`, `path_startswith` (for directory expectations), `snippet_contains` (for iMessage text expectations).
 
 ---
 
@@ -138,15 +151,34 @@ python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 
 # First-time-only: pre-download the LLM and re-ranker models.
-# Pulls ~2.3 GB Phi-3-mini (MLX) + ~80 MB cross-encoder. After this,
-# HF_HUB_OFFLINE=1 keeps subsequent daemon starts from re-checking HF.
+# Pulls ~280 MB Qwen2.5-0.5B (MLX) + ~80 MB cross-encoder. The fastembed
+# bi-encoder downloads automatically on first daemon run (~80 MB).
 HF_HUB_OFFLINE=0 .venv/bin/python -c "
 from fastembed.rerank.cross_encoder import TextCrossEncoder
 TextCrossEncoder(model_name='Xenova/ms-marco-MiniLM-L-6-v2')
 from mlx_lm import load
-load('mlx-community/Phi-3-mini-4k-instruct-4bit')
+load('mlx-community/Qwen2.5-0.5B-Instruct-4bit')
 "
 ```
+
+#### Optional: cloud query parser
+
+By default the daemon parses `/ask` queries on-device with Qwen2.5-0.5B. To swap in a cloud endpoint (default Groq + `llama-3.1-8b-instant`, free tier) — saves ~400 MB of resident memory and the model download:
+
+```bash
+# Get a free key at https://console.groq.com/keys
+.venv/bin/python cli.py config set-cloud-parser true   # prompts for the key, stores in Keychain
+.venv/bin/python cli.py daemon restart                 # required to pick up the new mode
+
+# Inspect current settings
+.venv/bin/python cli.py config show
+
+# Disable / clear the key
+.venv/bin/python cli.py config set-cloud-parser false
+.venv/bin/python cli.py config clear-cloud-key
+```
+
+When cloud mode is on, the overlay shows a small ☁ badge next to the esc button so you know queries are being sent off-device. Indexed content always stays on your machine; only the short query string is sent to the parser endpoint.
 
 ### Step 2 — Index your data
 

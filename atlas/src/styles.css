@@ -268,6 +268,18 @@ body {
   background: rgba(0, 0, 0, 0.12);
 }
 
+.cloud-badge {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: rgba(0, 0, 0, 0.45);
+  background: rgba(37, 99, 235, 0.08);
+  border-radius: 5px;
+  padding: 3px 7px;
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: default;
+}
+
 .esc-badge:focus-visible {
   /*
    * Show a focus ring ONLY when the user tabs onto the badge (keyboard

@@ -330,9 +330,12 @@ function createWindow(): void {
   // Load the renderer.
   if (VITE_DEV_SERVER_URL) {
     mainWindow.loadURL(VITE_DEV_SERVER_URL);
-    // Detached DevTools don't steal focus from the overlay itself the way
-    // inline DevTools do. Useful during Subtask 2 verification.
-    mainWindow.webContents.openDevTools({ mode: "detach" });
+    // Detached DevTools are opt-in: opening them adds ~1–2s to startup and
+    // visual clutter you don't usually need. Set OPEN_DEVTOOLS=1 when you
+    // actually want to inspect the renderer.
+    if (process.env.OPEN_DEVTOOLS === "1") {
+      mainWindow.webContents.openDevTools({ mode: "detach" });
+    }
   } else {
     mainWindow.loadFile(path.join(__dirname, "..", "dist", "index.html"));
   }

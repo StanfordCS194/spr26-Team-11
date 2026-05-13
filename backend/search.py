@@ -124,9 +124,21 @@ def find_directories(query: str, n_results: int = 10) -> list[Result]:
 
 
 def ask(user_input: str, n_results: int = 10) -> list[Result]:
-    """Conversational query: parse intent with local LLM, then route to the right search mode."""
+    """Conversational query: parse intent with the LLM, then route to the
+    right search mode. On any LLM failure (network down for cloud mode,
+    model load error for local, malformed output, timeout) fall back to a
+    plain content search with the raw input — same as the parser's own
+    schema-validation fallback path."""
+    import logging
     from llm import parse_query
-    parsed = parse_query(user_input)
+    log = logging.getLogger("atlas.daemon")
+    log.info("parsing query with LLM...")
+    try:
+        parsed = parse_query(user_input)
+    except Exception as e:
+        log.warning("LLM parse failed (%s); falling back to plain search", e)
+        return search(user_input, n_results=n_results)
+    log.info("parsed intent=%s terms=%r source=%s", parsed.intent, parsed.search_terms, parsed.source_filter)
 
     if parsed.intent == "find_directory":
         return find_directories(parsed.search_terms, n_results=n_results)

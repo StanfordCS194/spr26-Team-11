@@ -84,6 +84,31 @@ function mapResult(
 // Public surface.
 // -----------------------------------------------------------------------------
 
+// Build a fresh MockQuery from a list of backend results. Shared by the
+// /search and /ask paths so the result-shaping logic stays in one place.
+function buildQuery(
+  trimmed: string,
+  results: BackendSearchResult[],
+  idPrefix: "search" | "ask",
+): MockQuery | null {
+  if (results.length === 0) return null;
+  const queryId = `${idPrefix}-${Date.now()}`;
+  const queryTerms = trimmed
+    .toLowerCase()
+    .split(/\s+/)
+    .filter((t) => t.length > 1);
+  return {
+    id: queryId,
+    trigger: trimmed,
+    // /search doesn't synthesize a prose answer; /ask currently doesn't
+    // either (the backend uses the LLM only to route intent, not yet for
+    // RAG-style answer synthesis). The AtlasAnswer block will render its
+    // blank state in both cases until that endpoint is wired.
+    answer: "",
+    results: results.map((r, i) => mapResult(r, queryId, i, queryTerms)),
+  };
+}
+
 /**
  * Hit the daemon's /search endpoint and return the response shaped as a
  * MockQuery so the existing UI can render it. Returns null for empty input
@@ -105,24 +130,49 @@ export async function searchDaemon(
     throw new Error(`Daemon /search returned ${res.status}`);
   }
   const results: BackendSearchResult[] = await res.json();
-  if (results.length === 0) return null;
+  return buildQuery(trimmed, results, "search");
+}
 
-  // Each fetch produces a fresh MockQuery id so the App's
-  // [matchedQuery?.id] effects (e.g. resetting selectedIndex to 0) fire
-  // correctly when the response changes.
-  const queryId = `live-${Date.now()}`;
-  const queryTerms = trimmed
-    .toLowerCase()
-    .split(/\s+/)
-    .filter((t) => t.length > 1);
+/**
+ * Hit the daemon's /ask endpoint. Same return shape as searchDaemon, but
+ * routed through the local LLM so the daemon can interpret intent
+ * (find_directory, find_file, source filter, etc.) before retrieving.
+ *
+ * Slower than /search by ~1-2 s on first call (LLM warm-up) and a few
+ * hundred ms thereafter. Triggered by an explicit user action (Tab/Enter)
+ * rather than the as-you-type debounce.
+ */
+export async function askDaemon(
+  query: string,
+  signal: AbortSignal,
+): Promise<MockQuery | null> {
+  const trimmed = query.trim();
+  if (!trimmed) return null;
 
-  return {
-    id: queryId,
-    trigger: trimmed,
-    // The daemon's /search doesn't synthesize a prose answer (that's the
-    // /ask endpoint's job and it's slower). Empty string makes the
-    // AtlasAnswer block render its blank state until we wire /ask.
-    answer: "",
-    results: results.map((r, i) => mapResult(r, queryId, i, queryTerms)),
-  };
+  const res = await fetch(`${DAEMON_URL}/ask`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ query: trimmed, limit: 10 }),
+    signal,
+  });
+  if (!res.ok) {
+    throw new Error(`Daemon /ask returned ${res.status}`);
+  }
+  const results: BackendSearchResult[] = await res.json();
+  return buildQuery(trimmed, results, "ask");
+}
+
+/**
+ * Fetch the daemon's parser configuration so the UI can show a small
+ * indicator when the cloud parser is enabled. Returns "local" if the
+ * endpoint can't be reached — the badge defaults to off, not error.
+ */
+export async function fetchDaemonConfig(): Promise<{ parser_mode: "local" | "cloud" }> {
+  try {
+    const res = await fetch(`${DAEMON_URL}/config`);
+    if (!res.ok) return { parser_mode: "local" };
+    return await res.json();
+  } catch {
+    return { parser_mode: "local" };
+  }
 }
