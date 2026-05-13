@@ -106,45 +106,52 @@ def index_filesystem(root: Path, verbose: bool = False, progress_callback=None) 
     ]
 
     for path in files:
-        text = _parse_file(path)
-        if not text or not text.strip():
+        try:
+            text = _parse_file(path)
+            if not text or not text.strip():
+                continue
+
+            context_label, path_tokens_str = _path_to_context(path)
+            raw_chunks = chunk_text(text)
+            if not raw_chunks:
+                continue
+
+            # Prepend location context to each chunk before embedding
+            chunks_for_embedding = [
+                f"[Location: {context_label}]\n\n{chunk}" if context_label else chunk
+                for chunk in raw_chunks
+            ]
+
+            source_path = str(path)
+            mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).isoformat()
+
+            ids = [_chunk_id("filesystem", source_path, i) for i in range(len(raw_chunks))]
+            metadatas = [
+                {"source_type": "filesystem", "source_path": source_path, "chunk_index": i, "timestamp": mtime}
+                for i in range(len(raw_chunks))
+            ]
+            embeddings = embedder.embed(chunks_for_embedding)
+
+            # Store raw chunk text (without location prefix) so snippets stay readable
+            store.add(
+                ids=ids,
+                embeddings=embeddings,
+                documents=raw_chunks,
+                metadatas=metadatas,
+                path_tokens=[path_tokens_str] * len(raw_chunks),
+            )
+
+            indexed += 1
+            if progress_callback is not None:
+                progress_callback(indexed, len(files))
+            if verbose:
+                print(f"  indexed: {path.relative_to(root)} ({len(raw_chunks)} chunks)")
+        except Exception as e:
+            # One bad file (malformed PDF, unpaired surrogates choking the
+            # tokenizer, etc.) shouldn't kill the entire index run.
+            if verbose:
+                print(f"  skipped: {path}: {e}")
             continue
-
-        context_label, path_tokens_str = _path_to_context(path)
-        raw_chunks = chunk_text(text)
-        if not raw_chunks:
-            continue
-
-        # Prepend location context to each chunk before embedding
-        chunks_for_embedding = [
-            f"[Location: {context_label}]\n\n{chunk}" if context_label else chunk
-            for chunk in raw_chunks
-        ]
-
-        source_path = str(path)
-        mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).isoformat()
-
-        ids = [_chunk_id("filesystem", source_path, i) for i in range(len(raw_chunks))]
-        metadatas = [
-            {"source_type": "filesystem", "source_path": source_path, "chunk_index": i, "timestamp": mtime}
-            for i in range(len(raw_chunks))
-        ]
-        embeddings = embedder.embed(chunks_for_embedding)
-
-        # Store raw chunk text (without location prefix) so snippets stay readable
-        store.add(
-            ids=ids,
-            embeddings=embeddings,
-            documents=raw_chunks,
-            metadatas=metadatas,
-            path_tokens=[path_tokens_str] * len(raw_chunks),
-        )
-
-        indexed += 1
-        if progress_callback is not None:
-            progress_callback(indexed, len(files))
-        if verbose:
-            print(f"  indexed: {path.relative_to(root)} ({len(raw_chunks)} chunks)")
 
     return indexed
 
