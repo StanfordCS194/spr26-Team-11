@@ -113,6 +113,18 @@ class AskRequest(BaseModel):
     limit: int = 10
 
 
+class QueryRequest(BaseModel):
+    question: str
+    # Default lower than /search/limit=10: too many chunks blow the LLM
+    # context window and dilute the answer. 5 is a good RAG default.
+    limit: int = 5
+
+
+class QueryResponse(BaseModel):
+    answer: str
+    sources: list[SearchResult]
+
+
 def _run_filesystem_index(path: Path):
     global _index_job
 
@@ -215,6 +227,26 @@ def ask(req: AskRequest):
     results = search_mod.ask(req.query, n_results=req.limit)
     log.info("returned %d results", len(results))
     return [SearchResult(source_type=r.source_type, source_path=r.source_path, snippet=r.snippet, score=r.score) for r in results]
+
+
+@app.post("/query", response_model=QueryResponse)
+def query(req: QueryRequest):
+    """RAG: retrieve top chunks for the question, then have the LLM
+    synthesize an answer with [1]/[2]-style citations. Slower than /search
+    or /ask because it adds a generation pass after retrieval."""
+    log.info("query: %s", req.question)
+    out = search_mod.query(req.question, n_results=req.limit)
+    sources = [
+        SearchResult(
+            source_type=r.source_type,
+            source_path=r.source_path,
+            snippet=r.snippet,
+            score=r.score,
+        )
+        for r in out["sources"]
+    ]
+    log.info("query: returned %d sources", len(sources))
+    return QueryResponse(answer=out["answer"], sources=sources)
 
 
 @app.post("/clear")

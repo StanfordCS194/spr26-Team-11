@@ -18,6 +18,9 @@ class Result:
     source_path: str
     snippet: str
     score: float  # lower = more similar (after rerank: 1 - sigmoid(rerank_logit))
+    # Full chunk text. Used by the /query RAG path which needs more than
+    # the 300-char snippet to feed the LLM. Not serialized over /search.
+    text: str = ""
 
 
 def _tokenize(text: str) -> list[str]:
@@ -90,6 +93,7 @@ def search(query: str, n_results: int = 10, source_filter: str | None = None) ->
             source_path=meta["source_path"],
             snippet=doc[:300].replace("\n", " "),
             score=round(1.0 / (1.0 + math.exp(rs)), 4),
+            text=doc,
         )
         for (doc, meta, _), rs in zip(items, rerank_scores)
     ]
@@ -148,3 +152,44 @@ def ask(user_input: str, n_results: int = 10) -> list[Result]:
 
     # Default: content search
     return search(parsed.search_terms, n_results=n_results, source_filter=parsed.source_filter)
+
+
+# Cap each retrieved chunk's contribution to the RAG prompt. Matches the
+# guideline in llm._RAG_CHUNK_CHARS — defined here so search.py doesn't
+# need to import private llm constants.
+_QUERY_CHUNK_CHARS = 800
+
+
+def query(question: str, n_results: int = 5) -> dict:
+    """RAG: retrieve top chunks for `question`, then have the LLM synthesize
+    an answer from them. Returns:
+
+        {"answer": str, "sources": list[Result]}
+
+    The sources are the same shape as /search returns. If the LLM call fails
+    for any reason, returns the sources alone with a fallback `answer`
+    explaining that synthesis was unavailable — the user still gets ranked
+    results, just without the synthesized prose."""
+    import logging
+    from llm import synthesize_answer
+    log = logging.getLogger("atlas.daemon")
+    log.info("query: retrieving for %r", question)
+    sources = search(question, n_results=n_results)
+
+    if not sources:
+        return {"answer": "No relevant content found in the index.", "sources": []}
+
+    contexts = [
+        {"source_path": r.source_path, "text": r.text[:_QUERY_CHUNK_CHARS]}
+        for r in sources
+    ]
+    log.info("query: synthesizing answer from %d sources", len(sources))
+    try:
+        answer = synthesize_answer(question, contexts).strip()
+    except Exception as e:
+        log.warning("query: LLM synthesis failed (%s); returning sources only", e)
+        answer = (
+            "Couldn't generate an answer (LLM unavailable). "
+            "Top relevant sources are listed below."
+        )
+    return {"answer": answer, "sources": sources}

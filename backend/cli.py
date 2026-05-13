@@ -220,6 +220,31 @@ def ask(
     _print_results(r.json())
 
 
+@app.command()
+def query(
+    question: str = typer.Argument(..., help="Question to answer using retrieved chunks (RAG)."),
+    limit: int = typer.Option(5, "--limit", "-n", help="Number of source chunks to retrieve."),
+):
+    """RAG: retrieve top chunks, then synthesize an answer via the LLM with
+    [1]/[2]-style citations. Slower than /search and /ask — also pays one
+    LLM generation pass at the end."""
+    _ensure_daemon()
+    r = _request_with_log_status(
+        "POST",
+        f"{DAEMON_URL}/query",
+        label="Retrieving + synthesizing...",
+        json={"question": question, "limit": limit},
+        timeout=60.0,
+    )
+    r.raise_for_status()
+    data = r.json()
+    console.print()
+    console.print(f"[bold]Answer:[/bold]\n{data['answer']}")
+    console.print()
+    console.print("[bold]Sources:[/bold]")
+    _print_results(data["sources"])
+
+
 def _poll_index_progress(label: str):
     """Poll /index/status until the job finishes, rendering a live progress bar."""
     with Progress(
