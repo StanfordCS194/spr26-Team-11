@@ -8,6 +8,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Optional
@@ -18,11 +19,21 @@ from rich.console import Console
 from rich.progress import Progress, BarColumn, TaskProgressColumn, TextColumn, TimeElapsedColumn
 from rich.table import Table
 
-from config import DAEMON_URL, DAEMON_PID_FILE, DAEMON_LOG_FILE
+from config import (
+    DAEMON_URL,
+    DAEMON_PID_FILE,
+    DAEMON_LOG_FILE,
+    KEYCHAIN_SERVICE,
+    KEYCHAIN_USERNAME,
+    load_user_config,
+    save_user_config,
+)
 
 app = typer.Typer(help="Atlas -- local AI search across your personal data.")
 daemon_app = typer.Typer(help="Manage the Atlas daemon.")
+config_app = typer.Typer(help="View and edit Atlas user config.")
 app.add_typer(daemon_app, name="daemon")
+app.add_typer(config_app, name="config")
 console = Console()
 
 
@@ -72,22 +83,81 @@ def _spawn_daemon() -> int:
     return proc.pid
 
 
-def _wait_for_daemon(timeout: float = 300.0) -> bool:
+def _wait_for_daemon(timeout: float = 300.0, log_start_pos: Optional[int] = None) -> bool:
+    """Block until the daemon answers /status. If `log_start_pos` is given,
+    tail the daemon log from that byte offset and surface lines from the
+    `atlas.daemon` logger as a live spinner status, so the user sees which
+    warmup stage we're in instead of a blank wait."""
     deadline = time.time() + timeout
-    while time.time() < deadline:
-        if _daemon_alive():
-            return True
-        time.sleep(0.3)
+    if log_start_pos is None:
+        while time.time() < deadline:
+            if _daemon_alive():
+                return True
+            time.sleep(0.3)
+        return False
+
+    log_pos = log_start_pos
+    with console.status("[dim]Starting daemon...[/dim]") as status:
+        while time.time() < deadline:
+            if _daemon_alive():
+                return True
+            if DAEMON_LOG_FILE.exists():
+                with DAEMON_LOG_FILE.open() as f:
+                    f.seek(log_pos)
+                    new = f.read()
+                    log_pos = f.tell()
+                for line in new.splitlines():
+                    if "atlas.daemon:" in line:
+                        msg = line.split("atlas.daemon:", 1)[-1].strip()
+                        status.update(f"[dim]{msg}[/dim]")
+            time.sleep(0.3)
     return False
+
+
+def _log_size() -> int:
+    return DAEMON_LOG_FILE.stat().st_size if DAEMON_LOG_FILE.exists() else 0
+
+
+def _request_with_log_status(method: str, url: str, label: str, **kwargs) -> requests.Response:
+    """Run an HTTP request in a background thread while tailing the daemon log
+    and surfacing `atlas.daemon` lines as a live spinner status — same pattern
+    as `_wait_for_daemon`, so the user sees stages instead of a blank wait."""
+    result: dict = {}
+
+    def _do():
+        try:
+            result["response"] = requests.request(method, url, **kwargs)
+        except Exception as e:
+            result["error"] = e
+
+    log_pos = _log_size()
+    t = threading.Thread(target=_do, daemon=True)
+    t.start()
+    with console.status(f"[dim]{label}[/dim]") as status:
+        while t.is_alive():
+            if DAEMON_LOG_FILE.exists():
+                with DAEMON_LOG_FILE.open() as f:
+                    f.seek(log_pos)
+                    new = f.read()
+                    log_pos = f.tell()
+                for line in new.splitlines():
+                    if "atlas.daemon:" in line:
+                        msg = line.split("atlas.daemon:", 1)[-1].strip()
+                        status.update(f"[dim]{msg}[/dim]")
+            time.sleep(0.1)
+    t.join()
+    if "error" in result:
+        raise result["error"]
+    return result["response"]
 
 
 def _ensure_daemon():
     """Auto-start the daemon if it's not already running."""
     if _daemon_alive():
         return
-    console.print("[dim]Starting Atlas daemon (warming models)...[/dim]")
+    log_pos = _log_size()
     _spawn_daemon()
-    if not _wait_for_daemon():
+    if not _wait_for_daemon(log_start_pos=log_pos):
         console.print(f"[red]Daemon failed to start. Check {DAEMON_LOG_FILE}[/red]")
         raise typer.Exit(1)
     console.print("[green]Daemon ready.[/green]")
@@ -123,7 +193,12 @@ def search(
 ):
     """Semantic search across all indexed data."""
     _ensure_daemon()
-    r = requests.get(f"{DAEMON_URL}/search", params={"q": query, "limit": limit, "source": source})
+    r = _request_with_log_status(
+        "GET",
+        f"{DAEMON_URL}/search",
+        label="Searching...",
+        params={"q": query, "limit": limit, "source": source},
+    )
     r.raise_for_status()
     _print_results(r.json())
 
@@ -135,7 +210,12 @@ def ask(
 ):
     """Conversational search routed by the local LLM."""
     _ensure_daemon()
-    r = requests.post(f"{DAEMON_URL}/ask", json={"query": query, "limit": limit})
+    r = _request_with_log_status(
+        "POST",
+        f"{DAEMON_URL}/ask",
+        label="Thinking...",
+        json={"query": query, "limit": limit},
+    )
     r.raise_for_status()
     _print_results(r.json())
 
@@ -240,8 +320,9 @@ def daemon_start():
     if _daemon_alive():
         console.print("[yellow]Daemon already running.[/yellow]")
         return
+    log_pos = _log_size()
     _spawn_daemon()
-    if _wait_for_daemon():
+    if _wait_for_daemon(log_start_pos=log_pos):
         console.print(f"[green]Daemon started on {DAEMON_URL}[/green]")
     else:
         console.print(f"[red]Daemon failed to start. Check {DAEMON_LOG_FILE}[/red]")
@@ -297,6 +378,68 @@ def daemon_logs(
         cmd.append("-f")
     cmd.append(str(DAEMON_LOG_FILE))
     subprocess.run(cmd)
+
+
+# ---------------------------------------------------------------------------
+# User config (~/.atlas/config.json) — controls cloud-vs-local query parser.
+# Changes require a daemon restart to take effect.
+# ---------------------------------------------------------------------------
+
+@config_app.command("show")
+def config_show():
+    """Print the current user config."""
+    cfg = load_user_config()
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("Key", style="cyan")
+    table.add_column("Value")
+    for k, v in cfg.items():
+        table.add_row(k, str(v))
+    console.print(table)
+    has_key = _has_cloud_api_key()
+    console.print(f"[dim]Cloud API key in Keychain: {'yes' if has_key else 'no'}[/dim]")
+
+
+def _has_cloud_api_key() -> bool:
+    try:
+        import keyring
+        return keyring.get_password(KEYCHAIN_SERVICE, KEYCHAIN_USERNAME) is not None
+    except Exception:
+        return False
+
+
+@config_app.command("set-cloud-parser")
+def config_set_cloud_parser(enabled: bool = typer.Argument(..., help="true or false")):
+    """Toggle the cloud query parser. On first enable, prompts for an API key
+    and stores it in the macOS Keychain. Restart the daemon to apply."""
+    cfg = load_user_config()
+    if enabled and not _has_cloud_api_key():
+        console.print(
+            "[bold]Cloud parser uses an OpenAI-compatible endpoint "
+            "(default: Groq, free tier).[/bold]"
+        )
+        console.print(f"[dim]Endpoint: {cfg['cloud_endpoint']}  Model: {cfg['cloud_model']}[/dim]")
+        console.print("Get a free key at https://console.groq.com/keys")
+        key = typer.prompt("API key", hide_input=True)
+        if not key.strip():
+            console.print("[red]Empty key; aborting.[/red]")
+            raise typer.Exit(1)
+        import keyring
+        keyring.set_password(KEYCHAIN_SERVICE, KEYCHAIN_USERNAME, key.strip())
+        console.print("[green]Key stored in Keychain.[/green]")
+    cfg["cloud_parser"] = enabled
+    save_user_config(cfg)
+    console.print(f"[green]cloud_parser = {enabled}.[/green] Restart the daemon to apply.")
+
+
+@config_app.command("clear-cloud-key")
+def config_clear_cloud_key():
+    """Remove the cloud-parser API key from the Keychain."""
+    import keyring
+    try:
+        keyring.delete_password(KEYCHAIN_SERVICE, KEYCHAIN_USERNAME)
+        console.print("[green]Cloud API key removed.[/green]")
+    except keyring.errors.PasswordDeleteError:
+        console.print("[yellow]No key was stored.[/yellow]")
 
 
 if __name__ == "__main__":

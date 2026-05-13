@@ -268,6 +268,18 @@ body {
   background: rgba(0, 0, 0, 0.12);
 }
 
+.cloud-badge {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: rgba(0, 0, 0, 0.45);
+  background: rgba(37, 99, 235, 0.08);
+  border-radius: 5px;
+  padding: 3px 7px;
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: default;
+}
+
 .esc-badge:focus-visible {
   /*
    * Show a focus ring ONLY when the user tabs onto the badge (keyboard
@@ -411,6 +423,49 @@ body {
   border-top: 0.5px solid rgba(0, 0, 0, 0.06);
 
   flex: 0 0 auto;
+
+  /*
+   * Cap the visible height to ~5 rows (each ~54px). Larger result sets
+   * scroll within this zone instead of pushing the answer / preview /
+   * footer below the overlay's own 720 px cap, where they'd be clipped.
+   * This must be SMALLER than .overlay's max-height — otherwise the
+   * overlay clips the bottom before the list ever overflows on its own.
+   */
+  max-height: 280px;
+  overflow-y: auto;
+
+  /*
+   * Subtle, macOS-style scrollbar. Firefox uses scrollbar-width/-color;
+   * Chromium (which Electron runs on) uses ::-webkit-scrollbar pseudo-
+   * elements. Both are styled so the bar is a quiet vertical hint
+   * instead of the default chunky Chromium scrollbar.
+   */
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0, 0, 0, 0.25) transparent;
+}
+
+.results-list::-webkit-scrollbar {
+  width: 8px;
+}
+
+.results-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.results-list::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 4px;
+  /* 2px transparent border via background-clip leaves a thin gap on
+     either side of the thumb, the same trick macOS uses for its
+     overlay scrollbars. */
+  background-clip: padding-box;
+  border: 2px solid transparent;
+}
+
+.results-list::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.32);
+  background-clip: padding-box;
+  border: 2px solid transparent;
 }
 
 /* -----------------------------------------------------------------------------
@@ -431,12 +486,6 @@ body {
   cursor: pointer;
   user-select: none;
   -webkit-user-select: none;
-
-  /*
-   * Smooth the selection colour change from keyboard navigation — not so
-   * slow that it feels laggy, just a subtle easing on selection swaps.
-   */
-  transition: background-color 80ms ease, color 80ms ease;
 }
 
 /*
@@ -889,4 +938,50 @@ body {
    * the overlay's system font, not look like a terminal.
    */
   font-variant: normal;
+}
+
+/* ===========================================================================
+   Search loading indicator.
+   Three small dots that pulse in a staggered sequence while a backend fetch
+   is in flight. Sits in a thin row between the search bar and the answer
+   block.
+   TODO
+   =========================================================================== */
+.search-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 6px 0 12px;
+}
+
+.search-loading-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  /*
+   * Match the placeholder text colour so the loader feels like a quiet
+   * extension of the search bar rather than a separate UI element.
+   */
+  background: rgba(0, 0, 0, 0.42);
+  animation: search-loading-pulse 1.0s ease-in-out infinite;
+}
+
+/*
+ * Stagger each dot by 150ms so the pulse travels left → right. The total
+ * cycle is 1s, which feels brisk without being frantic.
+ */
+.search-loading-dot:nth-child(1) { animation-delay: 0ms; }
+.search-loading-dot:nth-child(2) { animation-delay: 150ms; }
+.search-loading-dot:nth-child(3) { animation-delay: 300ms; }
+
+@keyframes search-loading-pulse {
+  0%, 80%, 100% {
+    opacity: 0.25;
+    transform: scale(0.85);
+  }
+  40% {
+    opacity: 1;
+    transform: scale(1);
+  }
 }

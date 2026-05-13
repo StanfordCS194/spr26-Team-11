@@ -30,14 +30,12 @@
 //     </div>
 // =============================================================================
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import {
-  findMatchingQuery,
-  MockQuery,
-  MockResult,
-  SourceType,
-} from "./mockData";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import type { MockQuery, MockResult } from "./lib/types";
+import { shortDate } from "./lib/format";
 import { logEvent } from "./logger";
+import { askDaemon, fetchDaemonConfig, searchDaemon } from "./api";
+import { ResultRow } from "./components/ResultRow";
 
 export default function App() {
   // ---------------------------------------------------------------------------
@@ -50,19 +48,94 @@ export default function App() {
   const [query, setQuery] = useState<string>("");
 
   // ---------------------------------------------------------------------------
-  // Matched mock query (Subtask 5).
+  // Matched query — debounced fetch against the local backend daemon.
   // ---------------------------------------------------------------------------
-  // findMatchingQuery is a substring test against each mock query's trigger
-  // — short inputs like "bud" surface "q2 budget", "onboard" surfaces
-  // "onboarding". Returns null for empty input, which we use directly as the
-  // gate on rendering the answer block. useMemo keeps the lookup cached
-  // across re-renders that don't actually change `query` (e.g. unrelated
-  // state updates that may land in later subtasks).
+  // The daemon at 127.0.0.1:8765 returns ranked chunks from the user's
+  // indexed filesystem and iMessage data. searchDaemon() shapes the response
+  // into a MockQuery so the existing UI render path (AtlasAnswer + ResultsList
+  // + ExpandedPreview) doesn't change.
+  //
+  // Debounce: a 200 ms delay collapses bursts of keystrokes into one request.
+  // AbortController cancels any in-flight request when the user keeps typing,
+  // so the latest query always wins and stale responses can't overwrite it.
   // ---------------------------------------------------------------------------
-  const matchedQuery: MockQuery | null = useMemo(
-    () => findMatchingQuery(query),
-    [query]
-  );
+  const [matchedQuery, setMatchedQuery] = useState<MockQuery | null>(null);
+  // Tracks an in-flight backend fetch so the UI can render a loading
+  // indicator. Set to true the moment the debounce timer fires (not on
+  // every keystroke), so the spinner doesn't flicker during fast typing.
+  const [isSearching, setIsSearching] = useState<boolean>(false);
+  // Separate flag for an in-flight /ask request. /ask is triggered explicitly
+  // by Tab or Enter (not by typing) and is slower than /search because it
+  // routes through the local LLM, so the UI shows the loading indicator
+  // while it's running just like the search path does.
+  const [isAsking, setIsAsking] = useState<boolean>(false);
+  // Holds the AbortController for the current /ask call so a second
+  // Tab/Enter press cancels the previous request instead of stacking.
+  const askControllerRef = useRef<AbortController | null>(null);
+
+  // Parser mode reported by the daemon. Drives the "☁" badge in the search
+  // bar so the user can see at a glance whether queries are being parsed
+  // on-device or sent to the configured cloud endpoint. Fetched once on
+  // mount; daemon restart is required to switch modes anyway.
+  const [parserMode, setParserMode] = useState<"local" | "cloud">("local");
+  useEffect(() => {
+    fetchDaemonConfig().then((c) => setParserMode(c.parser_mode));
+  }, []);
+
+  const triggerAsk = (): void => {
+    const trimmed = query.trim();
+    if (!trimmed || isAsking) return;
+    askControllerRef.current?.abort();
+    const controller = new AbortController();
+    askControllerRef.current = controller;
+    setIsAsking(true);
+    askDaemon(trimmed, controller.signal)
+      .then((result) => {
+        // null = no results; treat the same as a search returning nothing.
+        setMatchedQuery(result);
+      })
+      .catch((e: Error) => {
+        if (e.name === "AbortError") return;
+        console.error("[atlas] ask failed:", e);
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setIsAsking(false);
+      });
+  };
+
+  useEffect(() => {
+    if (!query.trim()) {
+      setMatchedQuery(null);
+      setIsSearching(false);
+      return;
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(async () => {
+      setIsSearching(true);
+      try {
+        const result = await searchDaemon(query, controller.signal);
+        setMatchedQuery(result);
+      } catch (e) {
+        if ((e as Error).name === "AbortError") return;
+        // Network/daemon errors fall through to a null match. Logging keeps
+        // them visible in DevTools without breaking the UI.
+        console.error("[atlas] search failed:", e);
+        setMatchedQuery(null);
+      } finally {
+        // Only clear the flag if this effect run is still the latest one.
+        // The cleanup function aborts the request before it can resolve, so
+        // the AbortError branch above prevents this finally from running on
+        // stale fetches — but defensive ordering doesn't hurt.
+        if (!controller.signal.aborted) {
+          setIsSearching(false);
+        }
+      }
+    }, 200);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [query]);
 
   // ---------------------------------------------------------------------------
   // Selected result index (Subtask 6).
@@ -182,6 +255,20 @@ export default function App() {
         return;
       }
 
+      // Tab and Enter trigger an LLM-routed /ask request. Bound at the
+      // window level (rather than only on the input) so they fire even if
+      // focus has drifted into a result row. preventDefault on Tab stops
+      // the browser from shifting focus through the overlay; on Enter it
+      // stops any default form-submit behaviour from the input.
+      // Triggers regardless of whether a /search match is already on
+      // screen, so users can refine an existing result set with /ask.
+      if (e.key === "Tab" || e.key === "Enter") {
+        if (!query.trim()) return;
+        e.preventDefault();
+        triggerAsk();
+        return;
+      }
+
       if (!matchedQuery) return;
 
       if (e.key === "ArrowDown") {
@@ -195,18 +282,16 @@ export default function App() {
         e.preventDefault();
         const next = Math.max(0, selectedIndex - 1);
         if (next !== selectedIndex) selectResult(next);
-      } else if (e.key === "Enter") {
-        e.preventDefault();
-        openSelectedResult();
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
     // Including selectedIndex in the deps so the handler always sees the
-    // current selection for clamp math and Enter-to-open. React will
-    // re-register the listener on each move — still very cheap.
+    // current selection for clamp math. query is included so Tab/Enter
+    // see the latest typed input. React re-registers the listener on each
+    // change — still very cheap.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [matchedQuery, selectedIndex]);
+  }, [matchedQuery, selectedIndex, query]);
 
   // ---------------------------------------------------------------------------
   // "Reset on re-open" hook.
@@ -395,6 +480,15 @@ export default function App() {
          * clickable. The visible label is lowercase to match macOS's
          * modifier-key badge convention ("esc", "return", etc.).
          */}
+        {parserMode === "cloud" && (
+          <span
+            className="cloud-badge"
+            title="Cloud parser mode — queries are sent to the configured endpoint for intent parsing."
+            aria-label="Cloud parser enabled"
+          >
+            ☁
+          </span>
+        )}
         <button
           className="esc-badge"
           type="button"
@@ -406,6 +500,24 @@ export default function App() {
           esc
         </button>
       </div>
+
+      {/* -----------------------------------------------------------------
+         Loading indicator. Visible whenever a backend fetch is in flight.
+         Sits between the input and the results so the user sees that
+         their query is being processed even before any results arrive
+         (and during refinements over an existing matched query).
+         ----------------------------------------------------------------- */}
+      {(isSearching || isAsking) && (
+        <div
+          className="search-loading"
+          role="status"
+          aria-label={isAsking ? "Asking Atlas..." : "Searching..."}
+        >
+          <span className="search-loading-dot" />
+          <span className="search-loading-dot" />
+          <span className="search-loading-dot" />
+        </div>
+      )}
 
       {/* -----------------------------------------------------------------
          Atlas synthesized answer block (Subtask 5).
@@ -444,7 +556,7 @@ export default function App() {
          ----------------------------------------------------------------- */}
       {matchedQuery && (
         <ExpandedPreview
-          key={matchedQuery.results[selectedIndex].id}
+          // key={matchedQuery.results[selectedIndex].id}
           result={matchedQuery.results[selectedIndex]}
           onOpen={openSelectedResult}
         />
@@ -542,87 +654,13 @@ function ResultsList({
   );
 }
 
-// -----------------------------------------------------------------------------
-// ResultRow — one row of the Top K list.
-// -----------------------------------------------------------------------------
-function ResultRow({
-  result,
-  selected,
-  onClick,
-}: {
-  result: MockResult;
-  selected: boolean;
-  onClick: () => void;
-}) {
-  // Class list: base "result-row" plus the selected modifier when active.
-  // Inline template-string concat rather than a helper like classnames —
-  // the prototype has no other use for it, so a dependency is overkill.
-  const className = `result-row${selected ? " is-selected" : ""}`;
-
-  // Chip modifier derives from the SourceType. Lowercased to match the CSS
-  // conventions (`result-chip--mail`, etc.).
-  const chipModifier = sourceChipModifier(result.source);
-
-  return (
-    <li
-      className={className}
-      role="option"
-      aria-selected={selected}
-      onClick={onClick}
-    >
-      <span className={`result-chip result-chip--${chipModifier}`}>
-        {result.source}
-      </span>
-      <div className="result-row__main">
-        {/* Title and snippet each truncate with ellipsis on overflow — see
-            styles.css. Keeping the structure flat (no extra nesting)
-            reduces the number of layout boundaries the observer has to
-            measure on resize. */}
-        <div className="result-row__title">{result.title}</div>
-        <div className="result-row__snippet">{result.subtitle}</div>
-      </div>
-      <span className="result-row__date">{shortDate(result.date)}</span>
-    </li>
-  );
-}
+// ResultRow is now in ./components/ResultRow.tsx (imported at the top).
 
 // -----------------------------------------------------------------------------
 // Helpers for ResultsList / ResultRow
 // -----------------------------------------------------------------------------
 
-/**
- * Map a SourceType to the CSS modifier slug used on .result-chip. Kept
- * as a tiny lookup (rather than `.toLowerCase()` at the call site) so any
- * future source type with non-trivial casing (e.g. "iMessage" → "imessage")
- * stays isolated to one place.
- */
-function sourceChipModifier(source: SourceType): string {
-  switch (source) {
-    case "Mail":
-      return "mail";
-    case "Messages":
-      return "messages";
-    case "Documents":
-      return "documents";
-    case "Calendar":
-      return "calendar";
-  }
-}
-
-/**
- * Trim a long display date like "Apr 15, 2026 · 11:23 AM" down to just
- * "Apr 15" for the right-aligned date cell in a row. The full date+time is
- * still shown in the expanded preview (Subtask 7), so information is never
- * lost — just compressed for list density.
- *
- * Works by slicing up to the first comma. Any date missing a comma (a
- * pathological mock value we haven't authored) falls back to the raw
- * string rather than returning an empty one.
- */
-function shortDate(date: string): string {
-  const comma = date.indexOf(",");
-  return comma > 0 ? date.slice(0, comma) : date;
-}
+// sourceChipModifier and shortDate are now in ./lib/format.ts.
 
 // =============================================================================
 // ExpandedPreview — full preview of the selected result (Subtask 7).
@@ -660,6 +698,11 @@ function ExpandedPreview({
   // Same compression logic used by the results list.
   const headerDate = shortDate(result.date);
 
+  const bodyRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    bodyRef.current?.scrollTo(0, 0);
+  }, [result.id]);
+
   return (
     <div className="preview">
       {/* ------------------------------------------------------------------
@@ -689,7 +732,7 @@ function ExpandedPreview({
        * <HighlightedBody> which tokenises the text on a regex built
        * from the highlights array.
        */}
-      <div className="preview__body">
+      <div className="preview__body" ref={bodyRef}>
         <HighlightedBody text={result.body} terms={result.highlights} />
       </div>
 

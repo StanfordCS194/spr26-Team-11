@@ -127,8 +127,8 @@ let mainWindow: BrowserWindow | null = null;
 // Timings, tuned to feel like macOS Spotlight's own appear/dismiss. Fade-out
 // is slightly faster than fade-in so dismissal feels snappy while appearance
 // feels deliberate.
-const FADE_IN_MS = 120;
-const FADE_OUT_MS = 100;
+const FADE_IN_MS = 80; //120;
+const FADE_OUT_MS = 60; //100;
 
 let fadeIntervalId: NodeJS.Timeout | null = null;
 let fadeToken = 0;
@@ -330,9 +330,12 @@ function createWindow(): void {
   // Load the renderer.
   if (VITE_DEV_SERVER_URL) {
     mainWindow.loadURL(VITE_DEV_SERVER_URL);
-    // Detached DevTools don't steal focus from the overlay itself the way
-    // inline DevTools do. Useful during Subtask 2 verification.
-    mainWindow.webContents.openDevTools({ mode: "detach" });
+    // Detached DevTools are opt-in: opening them adds ~1–2s to startup and
+    // visual clutter you don't usually need. Set OPEN_DEVTOOLS=1 when you
+    // actually want to inspect the renderer.
+    if (process.env.OPEN_DEVTOOLS === "1") {
+      mainWindow.webContents.openDevTools({ mode: "detach" });
+    }
   } else {
     mainWindow.loadFile(path.join(__dirname, "..", "dist", "index.html"));
   }
@@ -457,7 +460,8 @@ app.whenReady().then(() => {
   // Cmd+Shift+Space). `Cmd+Space` is Spotlight; `Ctrl+Cmd+Space` is the
   // system emoji picker — both avoided.
   const registered = globalShortcut.register(
-    "CommandOrControl+Shift+Space",
+    // "CommandOrControl+Shift+Space",
+    "Option+Space",
     toggleOverlay
   );
   if (!registered) {
