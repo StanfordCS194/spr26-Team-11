@@ -10,7 +10,10 @@ def _get_model() -> TextEmbedding:
     return _model
 
 def embed(texts: list[str]) -> list[list[float]]:
-    return [e.tolist() for e in _get_model().embed(texts)]
+    # Strip unpaired surrogates and other invalid UTF-8 before the tokenizer
+    # sees them — fastembed raises "TextEncodeInput must be ..." otherwise.
+    safe = [t.encode("utf-8", "replace").decode("utf-8") for t in texts]
+    return [e.tolist() for e in _get_model().embed(safe)]
 
 def embed_one(text: str) -> list[float]:
     return next(_get_model().embed([text])).tolist()
