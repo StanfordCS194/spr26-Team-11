@@ -64,3 +64,13 @@ def save_user_config(config: dict) -> None:
 # `keyring` library; on macOS this lands in the user's login keychain.
 KEYCHAIN_SERVICE = "atlas"
 KEYCHAIN_USERNAME = "cloud_api_key"
+
+# Google Calendar OAuth: client credentials JSON downloaded from Google Cloud
+# Console (Desktop app type) lives next to this file. Tokens (access +
+# refresh) are stored in the Keychain as a JSON blob under a separate slot.
+GCAL_CLIENT_FILE = Path(__file__).parent / "gcal_client.json"
+GCAL_KEYCHAIN_USERNAME = "gcal_token"
+GCAL_SCOPES = [
+    "https://www.googleapis.com/auth/calendar.readonly",
+    "https://www.googleapis.com/auth/calendar.events.readonly",
+]

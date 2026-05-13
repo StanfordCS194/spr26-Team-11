@@ -41,7 +41,9 @@ _SYSTEM_PROMPT = (
     "from the user's input. Output only a JSON object with three fields: "
     "search_terms (string of core terms, stripped of conversational filler), "
     'intent (one of "search", "find_file", "find_directory"), and '
-    'source_filter (one of "filesystem", "imessage", or null).'
+    'source_filter (one of "filesystem", "imessage", "gcal", or null). '
+    'Use "gcal" for queries about calendar events, meetings, syncs, 1:1s, '
+    'or anything scheduled with attendees.'
 )
 
 _FEW_SHOT = [
@@ -53,6 +55,14 @@ _FEW_SHOT = [
      {"search_terms": "Alex meeting", "intent": "search", "source_filter": "imessage"}),
     ("dynamic memory allocation",
      {"search_terms": "dynamic memory allocation", "intent": "search", "source_filter": None}),
+    ("the meeting where we discussed the redesign",
+     {"search_terms": "meeting redesign", "intent": "search", "source_filter": "gcal"}),
+    ("my 1:1 with Alice last month",
+     {"search_terms": "1:1 Alice", "intent": "search", "source_filter": "gcal"}),
+    ("the planning sync about Q2 roadmap",
+     {"search_terms": "planning Q2 roadmap", "intent": "search", "source_filter": "gcal"}),
+    ("when did we have the design review",
+     {"search_terms": "design review", "intent": "search", "source_filter": "gcal"}),
 ]
 
 
@@ -74,7 +84,7 @@ def _build_messages(user_input: str) -> list[dict]:
 class _ParsedSchema(BaseModel):
     search_terms: str = Field(default="")
     intent: Literal["search", "find_file", "find_directory"] = "search"
-    source_filter: Literal["filesystem", "imessage"] | None = None
+    source_filter: Literal["filesystem", "imessage", "gcal"] | None = None
 
 
 @dataclass
