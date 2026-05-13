@@ -16,4 +16,3 @@ dist-electron/
 *.swp
 
 backend/eval/runs/
-EOF
