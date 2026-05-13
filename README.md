@@ -1,6 +1,6 @@
 # Atlas
 
-A locally-run, privacy-first AI search overlay for macOS. Press a global hotkey, type a question, get ranked results from your filesystem and iMessages. **By default, all retrieval, ranking, and query parsing happen on-device — no data leaves your machine.** An optional cloud parser (Groq-compatible) can be enabled for users who prefer it; see "Optional: cloud query parser" below.
+A locally-run, privacy-first AI search overlay for macOS. Press a global hotkey, type a question, get ranked results from your filesystem, iMessages, and Google Calendar. **By default, all retrieval, ranking, and query parsing happen on-device — no data leaves your machine.** An optional cloud parser (Groq-compatible) can be enabled for users who prefer it; see "Optional: cloud query parser" below. Google Calendar pulls events through Google's API but stores them only in the local index — see Step 2.
 
 **Team SSH**: Andrew Grant, Ji Qi Ni, Nick Donaldson, Olatayo Sobomehin, Ose Okhihan.
 
@@ -73,7 +73,8 @@ backend/
 ├── main.py        FastAPI app, lifespan warmup, CORS, BackgroundTasks
 ├── cli.py         Thin HTTP client over the daemon + daemon lifecycle
 ├── config.py      Constants (paths, model names, daemon URL)
-├── ingest.py      File walker, parser, chunker, path-context extractor
+├── ingest.py      File walker, parser, chunker, path-context extractor (filesystem + iMessage)
+├── gcal.py        Google Calendar OAuth, event fetch, chunking, index entry point
 ├── embed.py       fastembed wrapper (lazy-loaded singleton)
 ├── rerank.py      Cross-encoder wrapper (lazy-loaded singleton)
 ├── llm.py         Query-parser: Qwen2.5-0.5B (local) or OpenAI-compatible (cloud)
@@ -195,12 +196,36 @@ The CLI auto-starts the daemon on the first command. The first call will warm mo
 # System Settings → Privacy & Security → Full Disk Access)
 .venv/bin/python cli.py index --imessage
 
+# Index Google Calendar events (see "Google Calendar setup" below for OAuth)
+.venv/bin/python cli.py index --gcal
+
 # Wipe the index and rebuild from a directory (use after upgrading the
 # embedding model or changing path-context logic)
 .venv/bin/python cli.py reindex ~/Desktop
 
 # Check how many chunks are stored
 .venv/bin/python cli.py status
+```
+
+#### Google Calendar setup
+
+The first `--gcal` run opens a browser tab for Google's OAuth consent screen. Token (access + refresh) is persisted to the macOS Keychain via `keyring`, so subsequent runs are silent.
+
+Prerequisites:
+
+1. **OAuth client credentials.** Download `gcal_client.json` (Desktop-app type) from Google Cloud Console → APIs & Services → Credentials, and drop it next to [backend/config.py](backend/config.py). The file is gitignored — every developer / tester uses their own.
+2. **Calendar API enabled** on the Cloud project that issued the client.
+3. **Test-user allowlist** (only matters while the OAuth consent screen is in "Testing" mode, which is the default): Cloud Console → OAuth consent screen → Test users → add the Gmail address that will be authorizing. Up to 100 entries. Without this, sign-in fails with "Access blocked: app has not completed Google's verification process". `calendar.readonly` is a sensitive scope, so unverified apps can't open to the public without Google's review.
+
+Indexing behaviour:
+
+- Pulls events from every calendar where the visibility checkbox is on in Google Calendar's UI (so "US Holidays" / "Birthdays" auto-drop when hidden).
+- Time window: `-2 years` to `+6 months`. Recurring events collapse to the series so the weekly standup doesn't flood results.
+- Each event becomes a chunk prefixed with `[Calendar: ... | When: YYYY-MM-DD | With: ... | Where: ...]` so the bi-encoder picks up date/attendee/location context, mirroring the `[Location: ...]` trick used for filesystem chunks.
+
+```bash
+# Force re-auth (e.g. after the 7-day testing-mode refresh-token expiry)
+.venv/bin/python cli.py config gcal-clear
 ```
 
 ### Step 3 — Daemon lifecycle
@@ -231,9 +256,11 @@ Before launching the UI, verify the daemon is returning results:
 .venv/bin/python cli.py search "memory allocator"
 .venv/bin/python cli.py search "cs107" --limit 5
 .venv/bin/python cli.py search "ryan" --source imessage
+.venv/bin/python cli.py search "team standup" --source gcal
 
 # /ask routes through the local LLM for intent parsing
 .venv/bin/python cli.py ask "find the directory with my cs107 homework"
+.venv/bin/python cli.py ask "what meetings do I have with sarah next week"
 ```
 
 ### Step 5 — Frontend setup
@@ -267,5 +294,7 @@ Live results appear ~200 ms after you stop typing. The result list shows up to 5
 - **"Daemon failed to start"**: check `~/.atlas/daemon.log`. Most common cause is a missing model — re-run the pre-download in Step 1.
 - **`Cmd+Shift+Space` does nothing**: another app (Raycast, Alfred, etc.) owns the binding. Either disable that app's hotkey or change the accelerator string in `atlas/main.ts:460` and `npm start` again.
 - **Empty search results**: confirm the index isn't empty with `cli.py status`. If 0 chunks, run `cli.py index <some-path>`.
-- **iMessage indexing fails**: open System Settings → Privacy & Security → Full Disk Access and add Terminal (or whatever shell you're using).
+- **iMessage indexing fails**: open System Settings → Privacy & Security → Full Disk Access and add Terminal (or whatever shell you're using). Fully quit and reopen the terminal afterwards — the permission only takes effect on a fresh process.
+- **Google Calendar OAuth fails / "Access blocked"**: the tester's Gmail isn't on the Test users list. Add it in Google Cloud Console → OAuth consent screen → Test users. If a previously-working token has stopped working after a week, the testing-mode refresh-token expired — run `cli.py config gcal-clear` and re-index.
+- **`gcal_client.json missing` error**: download the Desktop-app OAuth client JSON from your Cloud project's Credentials page and save it to [backend/gcal_client.json](backend/gcal_client.json).
 - **Frontend can't reach daemon**: check `curl http://127.0.0.1:8765/status` from a terminal. If that fails, the daemon isn't running — `cli.py daemon start`.

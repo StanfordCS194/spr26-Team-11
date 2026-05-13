@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Atlas local state (vector index, models, daemon log/pid)
+.atlas/
+
+# Google OAuth client credentials — every developer downloads their own
+backend/gcal_client.json
+
+# Node / Electron
+node_modules/
+dist/
+out/
+
+# macOS
+.DS_Store
+
+# Editor
+.vscode/
+.idea/
+*.swp

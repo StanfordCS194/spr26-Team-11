@@ -210,6 +210,16 @@ def count() -> int:
     return n
 
 
+def count_by_source() -> dict[str, int]:
+    """Per-source chunk counts. Used by `cli.py status` to show what's indexed."""
+    con = _conn()
+    rows = con.execute(
+        "SELECT source_type, COUNT(*) FROM chunks GROUP BY source_type"
+    ).fetchall()
+    con.close()
+    return dict(rows)
+
+
 def query(embedding: list[float], n_results: int = 10) -> dict:
     """Pure semantic search — cosine distance only."""
     con = _conn()
