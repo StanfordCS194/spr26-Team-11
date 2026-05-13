@@ -186,7 +186,14 @@ def fetch_events(
 
     # calendarList.list returns the user's subscribed calendars + their
     # visibility/colour metadata.
-    cal_list = service.calendarList().list().execute().get("items", [])
+    cal_list: list[dict] = []
+    page_token = None
+    while True:
+        resp = service.calendarList().list(pageToken=page_token).execute()
+        cal_list.extend(resp.get("items", []))
+        page_token = resp.get("nextPageToken")
+        if not page_token:
+            break
     selected = [c for c in cal_list if c.get("selected", True)]
 
     events: list[dict] = []
