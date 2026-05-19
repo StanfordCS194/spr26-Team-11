@@ -307,6 +307,11 @@ export default function App() {
   useEffect(() => {
     const unsubscribe = window.atlasAPI.onShow(() => {
       setQuery("");
+      // Re-fetch the daemon's parser mode every time the overlay shows so
+      // toggling cloud_parser in ~/.atlas/config.json (followed by a daemon
+      // restart) takes effect on the next Option+Space without needing to
+      // restart the Electron renderer. Cheap — one GET to localhost.
+      fetchDaemonConfig().then((c) => setParserMode(c.parser_mode));
       // Use rAF to let React commit the empty-string state before focusing,
       // avoiding a flash where the old text is still visible at focus time.
       requestAnimationFrame(() => inputRef.current?.focus());

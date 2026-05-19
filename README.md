@@ -38,7 +38,7 @@ atlas/
         └── ResultRow.tsx
 ```
 
-The Electron main process owns the BrowserWindow (frameless, transparent, `vibrancy: "hud"`, frosted-glass border). It registers `Cmd+Shift+Space` as a global toggle and listens for blur events to dismiss the overlay on click-outside. The React renderer talks to the FastAPI daemon over HTTP (CORS-allowed loopback).
+The Electron main process owns the BrowserWindow (frameless, transparent, `vibrancy: "hud"`, frosted-glass border). It registers `Option+Space` as a global toggle and listens for blur events to dismiss the overlay on click-outside. The React renderer talks to the FastAPI daemon over HTTP (CORS-allowed loopback).
 
 ### Improvements made on top of the base UI
 
@@ -292,9 +292,38 @@ Live results appear ~200 ms after you stop typing. The result list shows up to 5
 ### Troubleshooting
 
 - **"Daemon failed to start"**: check `~/.atlas/daemon.log`. Most common cause is a missing model — re-run the pre-download in Step 1.
-- **`Cmd+Shift+Space` does nothing**: another app (Raycast, Alfred, etc.) owns the binding. Either disable that app's hotkey or change the accelerator string in `atlas/main.ts:460` and `npm start` again.
+- **`Option+Space` does nothing**: another app (the macOS character viewer, Raycast, Alfred, etc.) owns the binding. Either disable that app's hotkey or change the accelerator string in `atlas/main.ts:464` and `npm start` again.
 - **Empty search results**: confirm the index isn't empty with `cli.py status`. If 0 chunks, run `cli.py index <some-path>`.
 - **iMessage indexing fails**: open System Settings → Privacy & Security → Full Disk Access and add Terminal (or whatever shell you're using). Fully quit and reopen the terminal afterwards — the permission only takes effect on a fresh process.
 - **Google Calendar OAuth fails / "Access blocked"**: the tester's Gmail isn't on the Test users list. Add it in Google Cloud Console → OAuth consent screen → Test users. If a previously-working token has stopped working after a week, the testing-mode refresh-token expired — run `cli.py config gcal-clear` and re-index.
 - **`gcal_client.json missing` error**: download the Desktop-app OAuth client JSON from your Cloud project's Credentials page and save it to [backend/gcal_client.json](backend/gcal_client.json).
 - **Frontend can't reach daemon**: check `curl http://127.0.0.1:8765/status` from a terminal. If that fails, the daemon isn't running — `cli.py daemon start`.
+- **Cloud parser shows "no API key in Keychain"**: re-run `cli.py config set-cloud-parser true` and paste the key when prompted. Use `cli.py config show` to confirm whether a key is stored.
+- **Cloud badge (☁) doesn't update after toggling `cloud_parser`**: the renderer refetches `/config` on every overlay show, so a fresh `Option+Space` after `cli.py daemon restart` is enough. If it still doesn't appear, force a renderer reload (close and re-launch `npm start`).
+
+---
+
+## 4. Next steps
+
+Milestones still ahead, roughly in order of impact:
+
+### Search quality
+
+- **Path injection into the reranker.** Prepend `[Path: <file path>]` to each document before the cross-encoder scores it. The cross-encoder currently sees chunk text only, which is why a CS 106B page that mentions "CS107" can outrank actual CS 107 files. Cheapest open quality lever; ~5 lines in `search.py`.
+- **Use document-level LLM tags in retrieval/ranking.** Atlas now supports document-mode LLM tagging/indexing (extracting `{topics, document_type, summary}` per file and storing them with the index); the next step is to feed those tags into retrieval as a signal or score boost, especially for disambiguating similar paths.
+- **HyDE for `/ask`.** Expand the user's query into a hypothetical answer via the local LLM, embed *that*, and search. Adds ~1–2 s to `/ask` only; big recall win on vague queries like "find my notes on memory management".
+- **Better embedding model.** Swap `MiniLM-L6` (384-dim) for `bge-large-en-v1.5` (1024-dim) for a strong retrieval-benchmark improvement. Full reindex required; ~3× per-chunk embedding time.
+- **BM25 hybrid.** Add term-frequency scoring as a third signal alongside semantic + path-keyword, fused via reciprocal rank fusion. Catches exact-phrase matches that semantic similarity misses entirely.
+
+### New data sources
+
+- **Phase 2 RAG Q&A — wire `/query` into the UI.** The endpoint exists (synthesizes an answer from retrieved chunks via the local or cloud LLM, with `[1]/[2]` citations) but the overlay still only routes Tab/Enter to `/ask`. Needs a second keybinding (e.g. Shift+Enter) and an answer-display block above the result list.
+- **Speed up `/query`.** End-to-end latency is currently ~2.2 s on local Qwen 0.5B (vs ~0.8 s for `/search`). Options to investigate: skip the rerank stage since the LLM does its own relevance weighting during synthesis (saves ~1 s), shorten `_RAG_MAX_TOKENS`, or stream tokens to the UI so first-byte latency is what the user feels instead of total. Cloud mode is already ~1.3 s on Groq llama-3.1-8b — close to acceptable without further work.
+- **Calendar (EventKit).** Index local Calendar events. Requires a native macOS bridge since the frontend is Electron, not Swift.
+- **Apple Mail** (`.emlx`). Parse `~/Library/Mail/` and index message bodies + headers. Needs Full Disk Access.
+
+### Performance & polish
+
+- **MLX embeddings on Apple Silicon.** Replace ONNX-CPU bi-encoder with an MLX port for ~5–10× faster batch indexing of large directories. Sits naturally alongside the existing `mlx-lm` setup for the LLM.
+- **Packaging with `electron-builder`.** Produce a signed `.app` for distribution. Today `npm start` is the only entry point; no installable bundle yet.
+- **Re-baseline `backend/eval/`.** Re-run the 5-query eval set against Qwen 2.5 0.5B (current local parser) and Groq `llama-3.1-8b-instant` (cloud parser) to confirm parse quality didn't regress after the Phi-3 swap, and to compare local vs cloud parse fidelity.

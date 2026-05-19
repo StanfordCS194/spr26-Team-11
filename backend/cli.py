@@ -57,10 +57,12 @@ def _daemon_pid() -> Optional[int]:
 
 
 def _daemon_alive() -> bool:
-    """Check if the daemon is responsive. A generous timeout covers the case
-    where it's mid-request and slow to answer the health check."""
+    """Check if the daemon is responsive. Hits `/healthz` (no store/model
+    state) so a bug in a deeper handler doesn't make the daemon look dead.
+    A generous timeout covers the case where it's mid-request and slow to
+    answer the health check."""
     try:
-        r = requests.get(f"{DAEMON_URL}/status", timeout=5.0)
+        r = requests.get(f"{DAEMON_URL}/healthz", timeout=5.0)
         return r.ok
     except requests.RequestException:
         return False
@@ -218,6 +220,31 @@ def ask(
     )
     r.raise_for_status()
     _print_results(r.json())
+
+
+@app.command()
+def query(
+    question: str = typer.Argument(..., help="Question to answer using retrieved chunks (RAG)."),
+    limit: int = typer.Option(5, "--limit", "-n", help="Number of source chunks to retrieve."),
+):
+    """RAG: retrieve top chunks, then synthesize an answer via the LLM with
+    [1]/[2]-style citations. Slower than /search and /ask — also pays one
+    LLM generation pass at the end."""
+    _ensure_daemon()
+    r = _request_with_log_status(
+        "POST",
+        f"{DAEMON_URL}/query",
+        label="Retrieving + synthesizing...",
+        json={"question": question, "limit": limit},
+        timeout=60.0,
+    )
+    r.raise_for_status()
+    data = r.json()
+    console.print()
+    console.print(f"[bold]Answer:[/bold]\n{data['answer']}")
+    console.print()
+    console.print("[bold]Sources:[/bold]")
+    _print_results(data["sources"])
 
 
 def _poll_index_progress(label: str):
@@ -444,7 +471,7 @@ def _has_cloud_api_key() -> bool:
 
 @config_app.command("set-cloud-parser")
 def config_set_cloud_parser(enabled: bool = typer.Argument(..., help="true or false")):
-    """Toggle the cloud query parser. On first enable, prompts for an API key
+    """Toggle the cloud query parser (true/false). On first enable, prompts for an API key
     and stores it in the macOS Keychain. Restart the daemon to apply."""
     cfg = load_user_config()
     if enabled and not _has_cloud_api_key():
@@ -477,6 +504,32 @@ def config_clear_cloud_key():
         console.print("[yellow]No key was stored.[/yellow]")
 
 
+@config_app.command("set-retrieval-mode")
+def config_set_retrieval_mode(
+    mode: str = typer.Argument(..., help="One of: chunk, document"),
+):
+    """Switch the retrieval pipeline between per-chunk embeddings (chunk) and
+    per-file LLM-tagged summaries (document). Restart the daemon to apply.
+
+    The two modes use separate SQLite indices (~/.atlas/db/atlas.db and
+    ~/.atlas/db/atlas_tagged.db), so switching does not destroy the other
+    index. Document mode currently only indexes filesystem content —
+    iMessage stays chunk-mode only."""
+    if mode not in ("chunk", "document"):
+        console.print(f"[red]Invalid mode '{mode}'. Use 'chunk' or 'document'.[/red]")
+        raise typer.Exit(1)
+    cfg = load_user_config()
+    cfg["retrieval_mode"] = mode
+    save_user_config(cfg)
+    console.print(f"[green]retrieval_mode = {mode}.[/green] Restart the daemon to apply.")
+    if mode == "document":
+        console.print(
+            "[dim]Document mode reads from ~/.atlas/db/atlas_tagged.db. "
+            "If this is your first time, run `cli.py reindex <path>` "
+            "after the daemon restart to populate it.[/dim]"
+        )
+
+
 @config_app.command("gcal-clear")
 def config_gcal_clear():
     """Remove the Google Calendar OAuth token from the Keychain. Useful when
@@ -488,5 +541,23 @@ def config_gcal_clear():
         console.print("[yellow]No Google Calendar token was stored.[/yellow]")
 
 
+def _rewrite_leading_help_flag(argv: list[str]) -> list[str]:
+    """Allow `cli.py --help <command>` in addition to Typer's native
+    `cli.py <command> --help`. Walks past the leading --help/-h and
+    collects the following non-flag tokens as the command path
+    (e.g. `daemon start`), then re-emits them with --help at the end."""
+    if len(argv) < 3 or argv[1] not in ("--help", "-h"):
+        return argv
+    cmd_path: list[str] = []
+    i = 2
+    while i < len(argv) and not argv[i].startswith("-"):
+        cmd_path.append(argv[i])
+        i += 1
+    if not cmd_path:
+        return argv
+    return [argv[0], *cmd_path, "--help", *argv[i:]]
+
+
 if __name__ == "__main__":
+    sys.argv = _rewrite_leading_help_flag(sys.argv)
     app()

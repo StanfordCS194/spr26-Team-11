@@ -4,6 +4,13 @@ from pathlib import Path
 
 DATA_DIR = Path.home() / ".atlas"
 DB_DIR = DATA_DIR / "db"
+# Per-chunk index (existing retrieval mode). One row per chunk.
+DB_FILE = DB_DIR / "atlas.db"
+# Per-document index (new retrieval mode). One row per file with a
+# summary embedding + topics + document_type extracted by the LLM at
+# index time. Lives in a separate SQLite file so the two modes can
+# coexist on disk and we can A/B them by flipping retrieval_mode.
+TAGGED_DB_FILE = DB_DIR / "atlas_tagged.db"
 EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 CHUNK_SIZE = 400   # words
 CHUNK_OVERLAP = 50  # words
@@ -33,6 +40,10 @@ _DEFAULT_USER_CONFIG = {
     "cloud_parser": False,
     "cloud_endpoint": "https://api.groq.com/openai/v1",
     "cloud_model": "llama-3.1-8b-instant",
+    # Retrieval mode: "chunk" (existing — embed every chunk, retrieve+rerank)
+    # or "document" (new — one LLM-generated summary embedding per file).
+    # Both indices live side by side; flip and restart the daemon to switch.
+    "retrieval_mode": "chunk",
 }
 
 

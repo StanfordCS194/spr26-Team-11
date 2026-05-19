@@ -10,6 +10,7 @@ rich
 requests
 keyring           # macOS Keychain access for the cloud-parser API key
 outlines          # constrained JSON output for the local Qwen parser
+psutil            # USS measurement for memory-bounded cross-encoder recycle
 google-auth-oauthlib    # InstalledAppFlow loopback OAuth for Google Calendar
 google-api-python-client # Google Calendar REST client
 # LLM backends (install at least one)

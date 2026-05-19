@@ -26,11 +26,23 @@ from fastapi import FastAPI, Query, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-import store
-import ingest
 import embed
 import rerank
-import search as search_mod
+# Retrieval mode is chosen at daemon startup from ~/.atlas/config.json.
+# "chunk" (default): per-chunk embeddings, hybrid retrieval + rerank.
+# "document": per-file LLM-generated summary embeddings, separate DB.
+# Both subsystems implement the same search/ask/query interface so the
+# routes below don't care which is active.
+from config import load_user_config
+_RETRIEVAL_MODE = load_user_config().get("retrieval_mode", "chunk")
+if _RETRIEVAL_MODE == "document":
+    import store_tagged as store
+    import ingest_tagged as ingest
+    import search_tagged as search_mod
+else:
+    import store
+    import ingest
+    import search as search_mod
 
 
 @dataclass
@@ -52,6 +64,7 @@ log = logging.getLogger("atlas.daemon")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    log.info("retrieval mode: %s", _RETRIEVAL_MODE)
     if len(_cached_onnx) < 2:
         log.info("downloading models on first run (~160 MB, one-time)...")
     log.info("warming fastembed model...")
@@ -113,6 +126,18 @@ class AskRequest(BaseModel):
     limit: int = 10
 
 
+class QueryRequest(BaseModel):
+    question: str
+    # Default lower than /search/limit=10: too many chunks blow the LLM
+    # context window and dilute the answer. 5 is a good RAG default.
+    limit: int = 5
+
+
+class QueryResponse(BaseModel):
+    answer: str
+    sources: list[SearchResult]
+
+
 def _run_filesystem_index(path: Path):
     global _index_job
 
@@ -159,7 +184,7 @@ def _run_gcal_index():
             _index_job.total = total
 
     try:
-        n = gcal.index_gcal(progress_callback=on_progress)
+        n = ingest.index_gcal(progress_callback=on_progress)
         with _index_lock:
             if n == 0 and not gcal.has_token():
                 # Auth was declined / never completed — surface as error so
@@ -260,10 +285,38 @@ def ask(req: AskRequest):
     return [SearchResult(source_type=r.source_type, source_path=r.source_path, snippet=r.snippet, score=r.score) for r in results]
 
 
+@app.post("/query", response_model=QueryResponse)
+def query(req: QueryRequest):
+    """RAG: retrieve top chunks for the question, then have the LLM
+    synthesize an answer with [1]/[2]-style citations. Slower than /search
+    or /ask because it adds a generation pass after retrieval."""
+    log.info("query: %s", req.question)
+    out = search_mod.query(req.question, n_results=req.limit)
+    sources = [
+        SearchResult(
+            source_type=r.source_type,
+            source_path=r.source_path,
+            snippet=r.snippet,
+            score=r.score,
+        )
+        for r in out["sources"]
+    ]
+    log.info("query: returned %d sources", len(sources))
+    return QueryResponse(answer=out["answer"], sources=sources)
+
+
 @app.post("/clear")
 def clear():
     store.clear()
     return {"status": "cleared"}
+
+
+@app.get("/healthz")
+def healthz():
+    """Liveness probe. Touches no store/model state so a bug in a deeper
+    handler can't make the daemon look dead to `cli.py daemon start` /
+    `_ensure_daemon`. Use `/status` for actual index stats."""
+    return {"ok": True}
 
 
 @app.get("/status")
@@ -276,9 +329,9 @@ def status():
 
 @app.get("/config")
 def get_config():
-    """Surface the active parser mode so the UI can show a cloud badge."""
+    """Surface the active modes so the UI / clients can react accordingly."""
     from llm import mode as llm_mode
-    return {"parser_mode": llm_mode()}
+    return {"parser_mode": llm_mode(), "retrieval_mode": _RETRIEVAL_MODE}
 
 
 if __name__ == "__main__":
