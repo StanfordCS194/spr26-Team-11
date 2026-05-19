@@ -184,7 +184,7 @@ def _run_gcal_index():
             _index_job.total = total
 
     try:
-        n = gcal.index_gcal(progress_callback=on_progress)
+        n = ingest.index_gcal(progress_callback=on_progress)
         with _index_lock:
             if n == 0 and not gcal.has_token():
                 # Auth was declined / never completed — surface as error so
@@ -309,6 +309,14 @@ def query(req: QueryRequest):
 def clear():
     store.clear()
     return {"status": "cleared"}
+
+
+@app.get("/healthz")
+def healthz():
+    """Liveness probe. Touches no store/model state so a bug in a deeper
+    handler can't make the daemon look dead to `cli.py daemon start` /
+    `_ensure_daemon`. Use `/status` for actual index stats."""
+    return {"ok": True}
 
 
 @app.get("/status")

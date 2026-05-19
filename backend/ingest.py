@@ -224,3 +224,61 @@ def index_imessage(verbose: bool = False) -> int:
             print(f"  indexed conversation with: {contact} ({len(chunks)} chunks)")
 
     return indexed
+
+
+# ---------------------------------------------------------------------------
+# Google Calendar ingestion. Gcal-specific auth, fetch, and chunking live in
+# `gcal.py`; this function owns the embed + store half so the store choice
+# stays consistent with the rest of the chunk-mode pipeline.
+# ---------------------------------------------------------------------------
+
+def index_gcal(progress_callback=None, verbose: bool = False) -> int:
+    """Authorize, fetch, chunk, embed, and store all events from the user's
+    selected calendars. Returns the number of events indexed (not chunks)."""
+    import gcal
+
+    creds = gcal.authorize(interactive=True)
+    if creds is None:
+        return 0
+
+    events = gcal.fetch_events(creds)
+    total = len(events)
+    if progress_callback is not None:
+        progress_callback(0, total)
+
+    indexed = 0
+    for ev in events:
+        chunks = gcal.event_to_chunks(ev)
+        if not chunks:
+            continue
+
+        source_path = gcal._event_source_path(ev)
+        ts = gcal._event_timestamp(ev)
+
+        ids = [
+            hashlib.md5(f"gcal:{source_path}:{ci}".encode()).hexdigest()
+            for ci, _, _ in chunks
+        ]
+        embeddable = [text for _, text, _ in chunks]
+        snippets = [snippet for _, _, snippet in chunks]
+        metadatas = [
+            {"source_type": "gcal", "source_path": source_path, "chunk_index": ci, "timestamp": ts}
+            for ci, _, _ in chunks
+        ]
+        embeddings = embedder.embed(embeddable)
+
+        store.add(
+            ids=ids,
+            embeddings=embeddings,
+            documents=snippets,
+            metadatas=metadatas,
+            path_tokens=[""] * len(chunks),  # events have no paths; same as imessage
+        )
+
+        indexed += 1
+        if progress_callback is not None:
+            progress_callback(indexed, total)
+        if verbose:
+            print(f"  indexed event: {source_path} ({len(chunks)} chunks)")
+
+    return indexed

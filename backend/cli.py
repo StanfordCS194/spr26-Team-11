@@ -57,10 +57,12 @@ def _daemon_pid() -> Optional[int]:
 
 
 def _daemon_alive() -> bool:
-    """Check if the daemon is responsive. A generous timeout covers the case
-    where it's mid-request and slow to answer the health check."""
+    """Check if the daemon is responsive. Hits `/healthz` (no store/model
+    state) so a bug in a deeper handler doesn't make the daemon look dead.
+    A generous timeout covers the case where it's mid-request and slow to
+    answer the health check."""
     try:
-        r = requests.get(f"{DAEMON_URL}/status", timeout=5.0)
+        r = requests.get(f"{DAEMON_URL}/healthz", timeout=5.0)
         return r.ok
     except requests.RequestException:
         return False

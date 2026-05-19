@@ -175,3 +175,61 @@ def index_imessage(verbose: bool = False) -> int:
         "iMessage indexing is not supported in document retrieval mode. "
         "Switch retrieval_mode to 'chunk' to index iMessage."
     )
+
+
+# ---------------------------------------------------------------------------
+# Google Calendar ingestion (document mode). Each event becomes one row in
+# the documents table. We deliberately do NOT run the LLM tagging pass —
+# event titles + descriptions are already short and high-signal, and a
+# per-event LLM call would slow indexing by ~8s/event (cloud-paced) for
+# negligible retrieval gain.
+# ---------------------------------------------------------------------------
+
+def index_gcal(progress_callback=None, verbose: bool = False) -> int:
+    """Authorize, fetch, and store one document row per gcal event.
+    Returns the number of events indexed."""
+    import gcal
+
+    creds = gcal.authorize(interactive=True)
+    if creds is None:
+        return 0
+
+    events = gcal.fetch_events(creds)
+    total = len(events)
+    if progress_callback is not None:
+        progress_callback(0, total)
+
+    indexed = 0
+    for ev in events:
+        chunks = gcal.event_to_chunks(ev)
+        if not chunks:
+            continue
+
+        source_path = gcal._event_source_path(ev)
+
+        # Most events fit in one chunk; long descriptions might split. Join
+        # both the embeddable text (full prefix + body, what the bi-encoder
+        # sees) and the snippet text (UI-facing) so the document row carries
+        # the whole event regardless of chunk count.
+        embeddable_text = "\n".join(t for _, t, _ in chunks)
+        snippet_text = "\n".join(s for _, _, s in chunks)
+
+        summary_embedding = embedder.embed_one(embeddable_text)
+
+        store_tagged.add_document(
+            source_path=source_path,
+            source_type="gcal",
+            document_type="calendar event",
+            topics=[],
+            path_tokens="",
+            summary=snippet_text,
+            summary_embedding=summary_embedding,
+        )
+
+        indexed += 1
+        if progress_callback is not None:
+            progress_callback(indexed, total)
+        if verbose:
+            print(f"  tagged event: {source_path}")
+
+    return indexed

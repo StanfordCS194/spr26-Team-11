@@ -171,6 +171,18 @@ def count() -> int:
         con.close()
 
 
+def count_by_source() -> dict[str, int]:
+    """Per-source document counts. Used by `cli.py status` to show what's indexed."""
+    con = _conn()
+    try:
+        rows = con.execute(
+            "SELECT source_type, COUNT(*) FROM documents GROUP BY source_type"
+        ).fetchall()
+    finally:
+        con.close()
+    return dict(rows)
+
+
 # ---------------------------------------------------------------------------
 # Read path: cosine over summary embeddings + optional topic-overlap boost.
 # Returns "raw" dict in the same shape as store.query()/query_hybrid() so
