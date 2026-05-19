@@ -236,7 +236,11 @@ def query(
         )
         distances = np.where(mask, distances, np.inf)
 
-    order = np.argsort(distances)[:n_results]
+    valid_order = np.flatnonzero(np.isfinite(distances))
+    if valid_order.size == 0:
+        return {"documents": [[]], "metadatas": [[]], "distances": [[]]}
+
+    order = valid_order[np.argsort(distances[valid_order])[:n_results]]
     docs = [(_cache_summaries or [""] * n)[i] for i in order]
     metas = [
         {
