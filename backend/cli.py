@@ -434,7 +434,7 @@ def _has_cloud_api_key() -> bool:
 
 @config_app.command("set-cloud-parser")
 def config_set_cloud_parser(enabled: bool = typer.Argument(..., help="true or false")):
-    """Toggle the cloud query parser. On first enable, prompts for an API key
+    """Toggle the cloud query parser (true/false). On first enable, prompts for an API key
     and stores it in the macOS Keychain. Restart the daemon to apply."""
     cfg = load_user_config()
     if enabled and not _has_cloud_api_key():
@@ -467,5 +467,49 @@ def config_clear_cloud_key():
         console.print("[yellow]No key was stored.[/yellow]")
 
 
+@config_app.command("set-retrieval-mode")
+def config_set_retrieval_mode(
+    mode: str = typer.Argument(..., help="One of: chunk, document"),
+):
+    """Switch the retrieval pipeline between per-chunk embeddings (chunk) and
+    per-file LLM-tagged summaries (document). Restart the daemon to apply.
+
+    The two modes use separate SQLite indices (~/.atlas/db/atlas.db and
+    ~/.atlas/db/atlas_tagged.db), so switching does not destroy the other
+    index. Document mode currently only indexes filesystem content —
+    iMessage stays chunk-mode only."""
+    if mode not in ("chunk", "document"):
+        console.print(f"[red]Invalid mode '{mode}'. Use 'chunk' or 'document'.[/red]")
+        raise typer.Exit(1)
+    cfg = load_user_config()
+    cfg["retrieval_mode"] = mode
+    save_user_config(cfg)
+    console.print(f"[green]retrieval_mode = {mode}.[/green] Restart the daemon to apply.")
+    if mode == "document":
+        console.print(
+            "[dim]Document mode reads from ~/.atlas/db/atlas_tagged.db. "
+            "If this is your first time, run `cli.py reindex <path>` "
+            "after the daemon restart to populate it.[/dim]"
+        )
+
+
+def _rewrite_leading_help_flag(argv: list[str]) -> list[str]:
+    """Allow `cli.py --help <command>` in addition to Typer's native
+    `cli.py <command> --help`. Walks past the leading --help/-h and
+    collects the following non-flag tokens as the command path
+    (e.g. `daemon start`), then re-emits them with --help at the end."""
+    if len(argv) < 3 or argv[1] not in ("--help", "-h"):
+        return argv
+    cmd_path: list[str] = []
+    i = 2
+    while i < len(argv) and not argv[i].startswith("-"):
+        cmd_path.append(argv[i])
+        i += 1
+    if not cmd_path:
+        return argv
+    return [argv[0], *cmd_path, "--help", *argv[i:]]
+
+
 if __name__ == "__main__":
+    sys.argv = _rewrite_leading_help_flag(sys.argv)
     app()

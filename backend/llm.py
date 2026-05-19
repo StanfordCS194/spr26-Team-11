@@ -77,6 +77,31 @@ class _ParsedSchema(BaseModel):
     source_filter: Literal["filesystem", "imessage"] | None = None
 
 
+class _TagsSchema(BaseModel):
+    """LLM-extracted per-file tags. Used by the document-mode indexer.
+
+    `summary` accepts either a string or a list of strings — Groq's
+    llama-3.1-8b occasionally returns the summary as a list of sentences
+    instead of a single paragraph. Normalized to a single string by
+    `_normalize_tags` below.
+    """
+    topics: list[str] = Field(default_factory=list, max_length=8)
+    document_type: str = Field(default="")
+    summary: str | list[str] = Field(default="")
+
+
+def _normalize_tags(parsed: "_TagsSchema") -> dict:
+    """Flatten list-shaped fields to the dict shape callers expect."""
+    summary = parsed.summary
+    if isinstance(summary, list):
+        summary = " ".join(s.strip() for s in summary if isinstance(s, str) and s.strip())
+    return {
+        "topics": parsed.topics,
+        "document_type": parsed.document_type,
+        "summary": summary,
+    }
+
+
 @dataclass
 class ParsedQuery:
     search_terms: str
@@ -103,10 +128,11 @@ def _to_dataclass(schema: _ParsedSchema, fallback_terms: str) -> ParsedQuery:
 _local_model = None       # raw mlx model
 _local_tokenizer = None   # raw mlx tokenizer
 _local_generator = None   # outlines.Generator wrapping the above for parse_query
+_local_tag_generator = None  # outlines.Generator for extract_tags
 
 
 def _load_local() -> None:
-    global _local_model, _local_tokenizer, _local_generator
+    global _local_model, _local_tokenizer, _local_generator, _local_tag_generator
     if _local_generator is not None:
         return
     if platform.machine() != "arm64":
@@ -120,6 +146,9 @@ def _load_local() -> None:
     _local_model, _local_tokenizer = mlx_load(_QWEN_MODEL_ID)
     mlx_model = outlines.from_mlxlm(_local_model, _local_tokenizer)
     _local_generator = outlines.Generator(mlx_model, output_type=_ParsedSchema)
+    # A second generator constrained to the tags schema. Same underlying
+    # model — outlines just swaps logits processors per generator instance.
+    _local_tag_generator = outlines.Generator(mlx_model, output_type=_TagsSchema)
 
 
 def _parse_local(user_input: str) -> ParsedQuery:
@@ -178,6 +207,66 @@ def _parse_cloud(user_input: str) -> ParsedQuery:
     content = r.json()["choices"][0]["message"]["content"]
     schema = _ParsedSchema.model_validate_json(content)
     return _to_dataclass(schema, user_input)
+
+
+# ---------------------------------------------------------------------------
+# Tag extraction — document-mode indexer feeds a sampled excerpt of each file
+# through the LLM to produce {topics, document_type, summary}. Constrained
+# JSON in both modes (outlines on local, response_format on cloud) so the
+# indexer can trust the output shape.
+# ---------------------------------------------------------------------------
+
+_SYSTEM_TAGS = (
+    "You extract metadata from a file. Given the file's path and a stitched "
+    "excerpt of its contents, return a JSON object with three fields: "
+    "topics (3-7 short phrases capturing what the file is about), "
+    "document_type (one of: lecture notes, homework, research paper, code, "
+    "personal note, email, message, reference, other), and "
+    "summary (2-3 sentences describing the file's content). "
+    "Base your answer only on the path and excerpt provided."
+)
+
+
+def _build_tag_messages(file_label: str, sampled_text: str) -> list[dict]:
+    return [
+        {"role": "system", "content": _SYSTEM_TAGS},
+        {"role": "user",
+         "content": f"Path: {file_label}\n\nExcerpt:\n{sampled_text}"},
+    ]
+
+
+def _extract_tags_local(file_label: str, sampled_text: str) -> dict:
+    _load_local()
+    from outlines.inputs import Chat
+    raw = _local_tag_generator(
+        Chat(_build_tag_messages(file_label, sampled_text)),
+        max_tokens=300,
+    )
+    return _normalize_tags(_TagsSchema.model_validate_json(raw))
+
+
+def _extract_tags_cloud(file_label: str, sampled_text: str) -> dict:
+    import requests
+
+    endpoint = _config["cloud_endpoint"].rstrip("/")
+    payload = {
+        "model": _config["cloud_model"],
+        "messages": _build_tag_messages(file_label, sampled_text),
+        "response_format": {"type": "json_object"},
+        "max_tokens": 300,
+        "temperature": 0.0,
+    }
+    headers = {
+        "Authorization": f"Bearer {_get_api_key()}",
+        "Content-Type": "application/json",
+    }
+    r = requests.post(
+        f"{endpoint}/chat/completions",
+        json=payload, headers=headers, timeout=20.0,
+    )
+    r.raise_for_status()
+    content = r.json()["choices"][0]["message"]["content"]
+    return _normalize_tags(_TagsSchema.model_validate_json(content))
 
 
 # ---------------------------------------------------------------------------
@@ -274,6 +363,20 @@ def parse_query(text: str) -> ParsedQuery:
     if _MODE == "cloud":
         return _parse_cloud(text)
     return _parse_local(text)
+
+
+def extract_tags(file_label: str, sampled_text: str) -> dict:
+    """Extract {topics, document_type, summary} from a sampled file excerpt.
+
+    `file_label` is a short human-readable hint about the path (e.g.
+    "Stanford CS 107 hw3_solutions"). Returns a dict matching _TagsSchema;
+    fields may be empty strings/lists if the model decided it couldn't tell.
+    Raises on backend failure — the indexer is responsible for error
+    handling and skipping/retrying files.
+    """
+    if _MODE == "cloud":
+        return _extract_tags_cloud(file_label, sampled_text)
+    return _extract_tags_local(file_label, sampled_text)
 
 
 def synthesize_answer(question: str, contexts: list[dict]) -> str:

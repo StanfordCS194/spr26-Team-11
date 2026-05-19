@@ -10,6 +10,7 @@ rich
 requests
 keyring           # macOS Keychain access for the cloud-parser API key
 outlines          # constrained JSON output for the local Qwen parser
+psutil            # USS measurement for memory-bounded cross-encoder recycle
 # LLM backends (install at least one)
 mlx-lm            # Apple Silicon (recommended)
 llama-cpp-python  # fallback for non-Apple-Silicon

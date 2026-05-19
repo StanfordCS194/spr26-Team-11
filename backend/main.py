@@ -26,11 +26,23 @@ from fastapi import FastAPI, Query, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-import store
-import ingest
 import embed
 import rerank
-import search as search_mod
+# Retrieval mode is chosen at daemon startup from ~/.atlas/config.json.
+# "chunk" (default): per-chunk embeddings, hybrid retrieval + rerank.
+# "document": per-file LLM-generated summary embeddings, separate DB.
+# Both subsystems implement the same search/ask/query interface so the
+# routes below don't care which is active.
+from config import load_user_config
+_RETRIEVAL_MODE = load_user_config().get("retrieval_mode", "chunk")
+if _RETRIEVAL_MODE == "document":
+    import store_tagged as store
+    import ingest_tagged as ingest
+    import search_tagged as search_mod
+else:
+    import store
+    import ingest
+    import search as search_mod
 
 
 @dataclass
@@ -52,6 +64,7 @@ log = logging.getLogger("atlas.daemon")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    log.info("retrieval mode: %s", _RETRIEVAL_MODE)
     if len(_cached_onnx) < 2:
         log.info("downloading models on first run (~160 MB, one-time)...")
     log.info("warming fastembed model...")
@@ -262,9 +275,9 @@ def status():
 
 @app.get("/config")
 def get_config():
-    """Surface the active parser mode so the UI can show a cloud badge."""
+    """Surface the active modes so the UI / clients can react accordingly."""
     from llm import mode as llm_mode
-    return {"parser_mode": llm_mode()}
+    return {"parser_mode": llm_mode(), "retrieval_mode": _RETRIEVAL_MODE}
 
 
 if __name__ == "__main__":
