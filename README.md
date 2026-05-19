@@ -310,7 +310,7 @@ Milestones still ahead, roughly in order of impact:
 ### Search quality
 
 - **Path injection into the reranker.** Prepend `[Path: <file path>]` to each document before the cross-encoder scores it. The cross-encoder currently sees chunk text only, which is why a CS 106B page that mentions "CS107" can outrank actual CS 107 files. Cheapest open quality lever; ~5 lines in `search.py`.
-- **Document-level LLM tagging.** One LLM call per file at index time extracts `{topics, document_type, summary}` and stores them as a new `tags` column. Use as a retrieval signal or score boost. ~3 hours of one-time indexing for ~5,000 files; promising for disambiguating similar paths.
+- **Use document-level LLM tags in retrieval/ranking.** Atlas now supports document-mode LLM tagging/indexing (extracting `{topics, document_type, summary}` per file and storing them with the index); the next step is to feed those tags into retrieval as a signal or score boost, especially for disambiguating similar paths.
 - **HyDE for `/ask`.** Expand the user's query into a hypothetical answer via the local LLM, embed *that*, and search. Adds ~1–2 s to `/ask` only; big recall win on vague queries like "find my notes on memory management".
 - **Better embedding model.** Swap `MiniLM-L6` (384-dim) for `bge-large-en-v1.5` (1024-dim) for a strong retrieval-benchmark improvement. Full reindex required; ~3× per-chunk embedding time.
 - **BM25 hybrid.** Add term-frequency scoring as a third signal alongside semantic + path-keyword, fused via reciprocal rank fusion. Catches exact-phrase matches that semantic similarity misses entirely.
