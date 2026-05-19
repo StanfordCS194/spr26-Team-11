@@ -174,6 +174,41 @@ def _run_imessage_index():
             _index_job.finished_at = time.time()
 
 
+def _run_gcal_index():
+    global _index_job
+    import gcal
+
+    def on_progress(done: int, total: int):
+        with _index_lock:
+            _index_job.indexed = done
+            _index_job.total = total
+
+    try:
+        n = gcal.index_gcal(progress_callback=on_progress)
+        with _index_lock:
+            if n == 0 and not gcal.has_token():
+                # Auth was declined / never completed — surface as error so
+                # the CLI can show a clear message instead of a silent "0
+                # indexed". If a token exists and n == 0, the user genuinely
+                # has no events in the time window — that's a success.
+                _index_job.state = "error"
+                _index_job.error = "Authorization declined. No tokens stored."
+            else:
+                _index_job.state = "done"
+                _index_job.indexed = n
+            _index_job.finished_at = time.time()
+    except FileNotFoundError as e:
+        with _index_lock:
+            _index_job.state = "error"
+            _index_job.error = str(e)
+            _index_job.finished_at = time.time()
+    except Exception as e:
+        with _index_lock:
+            _index_job.state = "error"
+            _index_job.error = str(e)
+            _index_job.finished_at = time.time()
+
+
 def _start_job(target: str) -> bool:
     """Atomically start a job. Returns False if one is already running."""
     with _index_lock:
@@ -205,6 +240,14 @@ def index_imessage(background: BackgroundTasks):
         raise HTTPException(status_code=409, detail=f"Index job already running: {_index_job.target}")
     background.add_task(_run_imessage_index)
     return {"status": "started", "target": "imessage"}
+
+
+@app.post("/index/gcal")
+def index_gcal(background: BackgroundTasks):
+    if not _start_job("gcal"):
+        raise HTTPException(status_code=409, detail=f"Index job already running: {_index_job.target}")
+    background.add_task(_run_gcal_index)
+    return {"status": "started", "target": "gcal"}
 
 
 @app.get("/index/status")
@@ -270,7 +313,10 @@ def clear():
 
 @app.get("/status")
 def status():
-    return {"total_chunks": store.count()}
+    return {
+        "total_chunks": store.count(),
+        "by_source": store.count_by_source(),
+    }
 
 
 @app.get("/config")

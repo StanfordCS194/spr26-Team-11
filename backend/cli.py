@@ -189,7 +189,7 @@ def _print_results(results: list[dict]):
 def search(
     query: str = typer.Argument(..., help="Natural language search query."),
     limit: int = typer.Option(10, "--limit", "-n"),
-    source: Optional[str] = typer.Option(None, "--source", "-s", help="Filter by source: filesystem or imessage."),
+    source: Optional[str] = typer.Option(None, "--source", "-s", help="Filter by source: filesystem, imessage, or gcal."),
 ):
     """Semantic search across all indexed data."""
     _ensure_daemon()
@@ -279,10 +279,11 @@ def _poll_index_progress(label: str):
 def index(
     path: Optional[Path] = typer.Argument(None, help="Directory to index (filesystem)."),
     imessage: bool = typer.Option(False, "--imessage", help="Index iMessage history."),
+    gcal: bool = typer.Option(False, "--gcal", help="Index Google Calendar events."),
 ):
-    """Index a directory and/or iMessage history (runs on the daemon, blocks with live progress)."""
-    if path is None and not imessage:
-        console.print("[red]Provide a path to index or use --imessage.[/red]")
+    """Index a directory, iMessage history, and/or Google Calendar (runs on the daemon, blocks with live progress)."""
+    if path is None and not imessage and not gcal:
+        console.print("[red]Provide a path to index or use --imessage / --gcal.[/red]")
         raise typer.Exit(1)
     _ensure_daemon()
     if path is not None:
@@ -305,6 +306,23 @@ def index(
         r.raise_for_status()
         result = _poll_index_progress("Indexing iMessage")
         console.print(f"[green]Indexed {result['indexed']} conversations[/green]")
+    if gcal:
+        # OAuth happens on the daemon — if it's the first run, a browser
+        # tab will pop while we poll. Print a hint so the user knows what's
+        # going on instead of staring at a static progress bar.
+        import gcal as gcal_mod
+        if not gcal_mod.has_token():
+            console.print(
+                "[dim]No Google Calendar token cached. A browser window will "
+                "open shortly for sign-in.[/dim]"
+            )
+        r = requests.post(f"{DAEMON_URL}/index/gcal")
+        if r.status_code in (400, 409):
+            console.print(f"[red]{r.json().get('detail')}[/red]")
+            raise typer.Exit(1)
+        r.raise_for_status()
+        result = _poll_index_progress("Indexing Google Calendar")
+        console.print(f"[green]Indexed {result['indexed']} events[/green]")
 
 
 @app.command()
@@ -329,8 +347,25 @@ def status():
     _ensure_daemon()
     r = requests.get(f"{DAEMON_URL}/status")
     r.raise_for_status()
-    n = r.json().get("total_chunks", 0)
+    body = r.json()
+    n = body.get("total_chunks", 0)
+    by_source = body.get("by_source", {})
     console.print(f"[bold]Atlas index[/bold]: {n} chunks stored")
+    # Show per-source breakdown including sources with no chunks, so the
+    # user can see at a glance what's connected vs missing.
+    labels = [
+        ("Filesystem", "filesystem"),
+        ("iMessage", "imessage"),
+        ("Calendar", "gcal"),
+    ]
+    for label, key in labels:
+        count = by_source.get(key, 0)
+        if key == "gcal":
+            import gcal as gcal_mod
+            if count == 0 and not gcal_mod.has_token():
+                console.print(f"  {label}: [dim]not connected[/dim]")
+                continue
+        console.print(f"  {label}: {count} chunks")
     if n == 0:
         console.print("[yellow]Nothing indexed yet. Run: python cli.py index <path>[/yellow]")
 
@@ -491,6 +526,17 @@ def config_set_retrieval_mode(
             "If this is your first time, run `cli.py reindex <path>` "
             "after the daemon restart to populate it.[/dim]"
         )
+
+
+@config_app.command("gcal-clear")
+def config_gcal_clear():
+    """Remove the Google Calendar OAuth token from the Keychain. Useful when
+    the 7-day testing-mode refresh window expires, or to force re-auth."""
+    import gcal
+    if gcal.clear_token():
+        console.print("[green]Google Calendar token removed.[/green]")
+    else:
+        console.print("[yellow]No Google Calendar token was stored.[/yellow]")
 
 
 def _rewrite_leading_help_flag(argv: list[str]) -> list[str]:

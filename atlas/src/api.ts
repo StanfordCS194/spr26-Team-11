@@ -40,14 +40,16 @@ function pathDirname(path: string): string {
 // -----------------------------------------------------------------------------
 // Source-type mapping.
 // -----------------------------------------------------------------------------
-// The backend speaks "filesystem" / "imessage". The UI's SourceType union
-// is "Mail" | "Messages" | "Documents" | "Calendar" — derived from the
-// original mock-data design. We collapse filesystem chunks into "Documents"
-// and iMessage into "Messages". Mail and Calendar aren't yet indexed.
+// The backend speaks "filesystem" / "imessage" / "gcal". The UI's SourceType
+// union is "Mail" | "Messages" | "Documents" | "Calendar". Filesystem chunks
+// map to "Documents", iMessage to "Messages", gcal to "Calendar". Mail isn't
+// indexed yet.
 function mapSource(backend: string): SourceType {
   switch (backend) {
     case "imessage":
       return "Messages";
+    case "gcal":
+      return "Calendar";
     case "filesystem":
     default:
       return "Documents";
@@ -61,13 +63,38 @@ function mapResult(
   queryTerms: string[],
 ): MockResult {
   const source = mapSource(r.source_type);
-  const isMessage = source === "Messages";
+
+  let title: string;
+  let subtitle: string;
+  let from: string;
+  let openInApp: string;
+  if (source === "Messages") {
+    title = r.source_path;
+    subtitle = "iMessage thread";
+    from = r.source_path;
+    openInApp = "Messages";
+  } else if (source === "Calendar") {
+    // r.snippet is "title\n\ndescription..." (see backend/gcal.py). The first
+    // line is the event title; the rest is body. r.source_path is opaque
+    // (gcal://<cal_id>/<event_id>) so we don't surface it.
+    const firstNewline = r.snippet.indexOf("\n");
+    title = firstNewline >= 0 ? r.snippet.slice(0, firstNewline) : r.snippet;
+    subtitle = "Calendar event";
+    from = "Google Calendar";
+    openInApp = "Calendar";
+  } else {
+    title = pathBasename(r.source_path);
+    subtitle = pathDirname(r.source_path);
+    from = "Atlas index";
+    openInApp = "Finder";
+  }
+
   return {
     id: `${queryId}-r${idx}`,
     source,
-    title: isMessage ? r.source_path : pathBasename(r.source_path),
-    subtitle: isMessage ? "iMessage thread" : pathDirname(r.source_path),
-    from: isMessage ? r.source_path : "Atlas index",
+    title,
+    subtitle,
+    from,
     // The /search endpoint doesn't surface chunk timestamps yet. Empty
     // string keeps the renderer's date column from breaking layout; we'll
     // wire real timestamps through when the backend exposes them.
@@ -76,7 +103,7 @@ function mapResult(
     // Pass tokenised query terms so the existing HighlightedBody renderer
     // can bold them in the preview pane without any extra work.
     highlights: queryTerms,
-    openInApp: isMessage ? "Messages" : "Finder",
+    openInApp,
   };
 }
 

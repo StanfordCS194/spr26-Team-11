@@ -30,12 +30,13 @@ def _tokenize(text: str) -> list[str]:
 def _adaptive_semantic_weight(query_tokens: list[str], source_filter: str | None) -> float:
     """Pick a semantic_weight based on query character.
 
-    - iMessage chunks have empty path_tokens, so path scoring adds no signal → 1.0.
+    - iMessage and Calendar chunks have empty path_tokens, so path scoring
+      adds no signal → 1.0.
     - Queries with digit-bearing tokens ("cs107", "194w") usually mean a path
       keyword (course code, version) → 0.5 to give path scoring more weight.
     - Plain natural-language queries → 0.7 default.
     """
-    if source_filter == "imessage":
+    if source_filter in ("imessage", "gcal"):
         return 1.0
     if any(any(c.isdigit() for c in t) for t in query_tokens):
         return 0.5
