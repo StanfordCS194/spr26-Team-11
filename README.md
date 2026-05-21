@@ -121,7 +121,7 @@ The daemon binds to `127.0.0.1:8765`, holds models warm in memory, and processes
 `backend/eval/` holds a small benchmark used to measure search-quality changes. Five hand-picked queries with known expected matches; the runner records the rank of the expected match in top-10 (0 = top hit, -1 = miss) plus HTTP latency. With the daemon running:
 
 ```bash
-cd ~/Desktop/cs194w/backend
+cd ~/.../cs194w/backend
 .venv/bin/python eval/run.py --label baseline    # save as eval/runs/<timestamp>-baseline.json
 .venv/bin/python eval/run.py --label with-hyde   # after a change; compare with diff
 ```
@@ -266,7 +266,7 @@ Before launching the UI, verify the daemon is returning results:
 ### Step 5 — Frontend setup
 
 ```bash
-cd ~/Desktop/cs194w/atlas
+cd ~/.../cs194w/atlas
 
 # One-time install (~150 MB for Electron + dependencies)
 npm install
