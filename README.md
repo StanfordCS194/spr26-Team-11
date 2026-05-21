@@ -145,7 +145,7 @@ These instructions assume a fresh clone of the repo on macOS (Apple Silicon reco
 ### Step 1 — Backend setup
 
 ```bash
-cd ~/Desktop/cs194w/backend
+cd ~/.../cs194w/backend
 
 # Create the virtual environment and install dependencies
 python3 -m venv .venv
