@@ -335,14 +335,21 @@ body {
   padding: 14px 20px 16px;
 }
 
-/* The "● Atlas" label row above the prose. Semantically a heading-ish badge
-   but not an actual <h1>/<hN> because the overlay isn't a document. */
+/* Label row: blue "Atlas" badge on the left, one-line summary on the right. */
+.atlas-answer__label-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  margin-bottom: 8px;
+}
+
+/* The "● Atlas" badge. Semantically a heading-ish label, not an <hN>. */
 .atlas-answer__label {
   display: flex;
   align-items: center;
   gap: 6px;
-
-  margin-bottom: 8px;
+  flex: 0 0 auto;
 
   font-family: inherit;
   font-size: 11px;
@@ -352,6 +359,30 @@ body {
 
   /* Apple system blue at 88% — vivid enough to pop, not pure to feel "ink". */
   color: rgba(0, 122, 255, 0.88);
+}
+
+/* Short status line to the right of the Atlas badge. */
+.atlas-answer__summary {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.35;
+  letter-spacing: 0;
+  text-transform: none;
+  color: rgba(60, 60, 67, 0.72);
+
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Tighter bottom padding when the block is summary-only (no prose body). */
+.atlas-answer:not(:has(.atlas-answer__body)) {
+  padding-bottom: 14px;
 }
 
 .atlas-answer__dot {
