@@ -222,7 +222,9 @@ export default function App() {
       queryId: matchedQuery.id,
       resultId: result.id,
     });
-    // No actual shell-out in the prototype — the event is the product.
+    if (result.openInApp === "Finder" && result.sourcePath) {
+      window.atlasAPI.revealInFinder(result.sourcePath);
+    }
   };
 
   // ---------------------------------------------------------------------------
@@ -690,9 +692,9 @@ function ExpandedPreview({
 }: {
   result: MockResult;
   // Called when the user activates "Open in [app] →". The parent logs the
-  // open_in_app event and (in the real app) would shell out to the named
-  // macOS app. Passed in rather than implemented here so the log writer has
-  // access to the matched-query id, which this component doesn't know.
+  // open_in_app event and shells out via IPC (Finder for Documents hits).
+  // Passed in rather than implemented here so the log writer has access to
+  // the matched-query id, which this component doesn't know.
   onOpen: () => void;
 }) {
   // Compact top-header "from": just the person's name, no email/role
@@ -764,9 +766,8 @@ function ExpandedPreview({
 
       {/*
        * "Open in [app] →" link. Implemented as <button> because clicking
-       * it doesn't navigate — in the real app it would shell out to the
-       * named macOS app. For this prototype it's a no-op; Subtask 9 will
-       * attach the "open_in_app" log event here. Styled to read as a
+       * it doesn't navigate — the parent shells out to the named macOS app
+       * (Finder for indexed files). Styled to read as a
        * link (blue text, arrow glyph) even though it's a button element.
        */}
       <div className="preview__open">

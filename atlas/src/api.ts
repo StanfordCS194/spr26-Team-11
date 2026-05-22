@@ -104,6 +104,7 @@ function mapResult(
     // can bold them in the preview pane without any extra work.
     highlights: queryTerms,
     openInApp,
+    ...(source === "Documents" ? { sourcePath: r.source_path } : {}),
   };
 }
 
