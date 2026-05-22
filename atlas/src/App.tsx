@@ -32,7 +32,7 @@
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { MockQuery, MockResult } from "./lib/types";
-import { shortDate } from "./lib/format";
+import { getAtlasSummaryText, shortDate } from "./lib/format";
 import { logEvent } from "./logger";
 import { askDaemon, fetchDaemonConfig, searchDaemon } from "./api";
 import { ResultRow } from "./components/ResultRow";
@@ -69,6 +69,9 @@ export default function App() {
   // routes through the local LLM, so the UI shows the loading indicator
   // while it's running just like the search path does.
   const [isAsking, setIsAsking] = useState<boolean>(false);
+  // True after the latest debounced /search or /ask finishes for the current
+  // query string. Drives empty-state copy vs the pre-search placeholder.
+  const [searchAttempted, setSearchAttempted] = useState<boolean>(false);
   // Holds the AbortController for the current /ask call so a second
   // Tab/Enter press cancels the previous request instead of stacking.
   const askControllerRef = useRef<AbortController | null>(null);
@@ -99,7 +102,10 @@ export default function App() {
         console.error("[atlas] ask failed:", e);
       })
       .finally(() => {
-        if (!controller.signal.aborted) setIsAsking(false);
+        if (!controller.signal.aborted) {
+          setIsAsking(false);
+          setSearchAttempted(true);
+        }
       });
   };
 
@@ -107,8 +113,10 @@ export default function App() {
     if (!query.trim()) {
       setMatchedQuery(null);
       setIsSearching(false);
+      setSearchAttempted(false);
       return;
     }
+    setSearchAttempted(false);
     const controller = new AbortController();
     const timer = setTimeout(async () => {
       setIsSearching(true);
@@ -128,6 +136,7 @@ export default function App() {
         // stale fetches — but defensive ordering doesn't hurt.
         if (!controller.signal.aborted) {
           setIsSearching(false);
+          setSearchAttempted(true);
         }
       }
     }, 200);
@@ -433,6 +442,19 @@ export default function App() {
     };
   }, [matchedQuery?.id, selectedIndex]);
 
+  const trimmedQuery = query.trim();
+  const atlasSummary = getAtlasSummaryText(
+    !trimmedQuery
+      ? { kind: "idle" }
+      : isSearching || isAsking
+        ? { kind: "loading", asking: isAsking }
+        : matchedQuery
+          ? { kind: "results", results: matchedQuery.results }
+          : searchAttempted
+            ? { kind: "empty" }
+            : { kind: "placeholder" }
+  );
+
   return (
     <div className="overlay" ref={overlayRef}>
       {/* -----------------------------------------------------------------
@@ -533,7 +555,9 @@ export default function App() {
          (via the ResizeObserver in this component → IPC → window resize)
          and shrinks back when the user clears or changes the input.
          ----------------------------------------------------------------- */}
-      {matchedQuery && <AtlasAnswer query={matchedQuery} />}
+      {atlasSummary && (
+        <AtlasAnswer query={matchedQuery} summary={atlasSummary} />
+      )}
 
       {/* -----------------------------------------------------------------
          Top K results list (Subtask 6).
@@ -596,17 +620,27 @@ export default function App() {
 // import noise. If/when sibling zones (results list, expanded preview) get
 // long enough, all four can move to src/components/ in one pass.
 // =============================================================================
-function AtlasAnswer({ query }: { query: MockQuery }) {
+function AtlasAnswer({
+  query,
+  summary,
+}: {
+  query: MockQuery | null;
+  summary: string;
+}) {
   return (
     <div className="atlas-answer">
-      <div className="atlas-answer__label" aria-hidden="true">
-        {/* The dot is decorative (the "Atlas" text already labels the
-            source), so it's hidden from assistive tech via the parent's
-            aria-hidden. Screen readers announce only "Atlas" + answer text. */}
-        <span className="atlas-answer__dot" />
-        <span>Atlas</span>
+      <div className="atlas-answer__label-row">
+        <div className="atlas-answer__label" aria-hidden="true">
+          <span className="atlas-answer__dot" />
+          <span>Atlas</span>
+        </div>
+        <p className="atlas-answer__summary" role="status" aria-live="polite">
+          {summary}
+        </p>
       </div>
-      <p className="atlas-answer__body">{query.answer}</p>
+      {query?.answer ? (
+        <p className="atlas-answer__body">{query.answer}</p>
+      ) : null}
     </div>
   );
 }
