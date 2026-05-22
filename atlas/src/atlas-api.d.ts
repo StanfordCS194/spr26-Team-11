@@ -43,6 +43,10 @@ interface AtlasAPI {
   // Open Finder and select the file at `absolutePath`, or open the folder
   // if `absolutePath` is a directory. No-op when the path does not exist.
   revealInFinder(absolutePath: string): void;
+
+  // Open a native Finder directory picker and return the selected absolute
+  // folder path, or null if the user cancels.
+  pickFolder(): Promise<string | null>;
 }
 
 interface Window {

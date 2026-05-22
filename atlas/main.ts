@@ -41,6 +41,7 @@
 import {
   app,
   BrowserWindow,
+  dialog,
   globalShortcut,
   ipcMain,
   screen,
@@ -507,6 +508,29 @@ app.whenReady().then(() => {
     } catch (err) {
       console.error("[atlas] reveal-in-finder failed:", err);
     }
+  });
+
+  // -------------------------------------------------------------------------
+  // IPC handler: open Finder folder picker for filesystem indexing.
+  // -------------------------------------------------------------------------
+  // Returns the chosen absolute folder path to the renderer, or null when
+  // cancelled. The renderer then calls the daemon's /index/filesystem route.
+  // -------------------------------------------------------------------------
+  ipcMain.handle("atlas:pick-folder", async () => {
+    const focusedWindow = BrowserWindow.getFocusedWindow() ?? mainWindow;
+    const result = focusedWindow
+      ? await dialog.showOpenDialog(focusedWindow, {
+          title: "Choose folder to index",
+          properties: ["openDirectory", "createDirectory"],
+          buttonLabel: "Index Folder",
+        })
+      : await dialog.showOpenDialog({
+          title: "Choose folder to index",
+          properties: ["openDirectory", "createDirectory"],
+          buttonLabel: "Index Folder",
+        });
+    if (result.canceled || result.filePaths.length === 0) return null;
+    return result.filePaths[0] ?? null;
   });
 
   // -------------------------------------------------------------------------
