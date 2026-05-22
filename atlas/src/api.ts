@@ -204,3 +204,24 @@ export async function fetchDaemonConfig(): Promise<{ parser_mode: "local" | "clo
     return { parser_mode: "local" };
   }
 }
+
+/**
+ * Start a filesystem indexing job for the selected folder.
+ */
+export async function indexFilesystemPath(
+  folderPath: string,
+): Promise<{ status: string; target: string }> {
+  const res = await fetch(`${DAEMON_URL}/index/filesystem`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path: folderPath }),
+  });
+  if (!res.ok) {
+    const detail = await res
+      .json()
+      .then((v: { detail?: string }) => v.detail ?? `status ${res.status}`)
+      .catch(() => `status ${res.status}`);
+    throw new Error(`Failed to start indexing: ${detail}`);
+  }
+  return res.json();
+}

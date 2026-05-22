@@ -280,6 +280,42 @@ body {
   cursor: default;
 }
 
+.settings-badge {
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.06);
+  color: rgba(0, 0, 0, 0.62);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+  transition: background 120ms ease;
+}
+
+.settings-badge svg {
+  width: 14px;
+  height: 14px;
+}
+
+.settings-badge:hover {
+  background: rgba(0, 0, 0, 0.1);
+}
+
+.settings-badge:active {
+  background: rgba(0, 0, 0, 0.12);
+}
+
+.settings-badge:focus-visible {
+  outline: 2px solid rgba(37, 99, 235, 0.45);
+  outline-offset: 1px;
+}
+
 .esc-badge:focus-visible {
   /*
    * Show a focus ring ONLY when the user tabs onto the badge (keyboard
@@ -287,6 +323,94 @@ body {
    */
   outline: 2px solid rgba(37, 99, 235, 0.45);
   outline-offset: 1px;
+}
+
+.settings-panel {
+  flex: 0 0 auto;
+  border-top: 0.5px solid rgba(0, 0, 0, 0.06);
+  padding: 16px 20px 18px;
+}
+
+.settings-panel__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.settings-panel__title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: #1d1d1f;
+}
+
+.settings-panel__close {
+  border: none;
+  border-radius: 6px;
+  background: rgba(37, 99, 235, 0.1);
+  color: #2563eb;
+  padding: 5px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+.settings-panel__close:hover {
+  background: rgba(37, 99, 235, 0.16);
+}
+
+.settings-panel__section h3 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(0, 0, 0, 0.82);
+}
+
+.settings-panel__section p {
+  margin: 0 0 8px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: rgba(0, 0, 0, 0.72);
+}
+
+.settings-panel__section code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+}
+
+.settings-panel__action {
+  border: none;
+  border-radius: 8px;
+  background: #2563eb;
+  color: #ffffff;
+  padding: 7px 12px;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+  transition: filter 120ms ease;
+}
+
+.settings-panel__action:hover:not(:disabled) {
+  filter: brightness(0.95);
+}
+
+.settings-panel__action:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.settings-panel__meta {
+  margin-top: 10px;
+}
+
+.settings-panel__status {
+  margin-top: 4px;
+  color: rgba(37, 99, 235, 0.95);
 }
 
 /* =============================================================================
