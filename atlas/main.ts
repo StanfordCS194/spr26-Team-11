@@ -41,9 +41,11 @@
 import {
   app,
   BrowserWindow,
+  dialog,
   globalShortcut,
   ipcMain,
   screen,
+  shell,
 } from "electron";
 import * as fs from "fs";
 import * as path from "path";
@@ -477,6 +479,58 @@ app.whenReady().then(() => {
     // Route through hideOverlay() so Escape dismissal also plays the
     // fade-out animation rather than vanishing instantly.
     hideOverlay();
+  });
+
+  // -------------------------------------------------------------------------
+  // IPC handler: reveal a filesystem path in Finder.
+  // -------------------------------------------------------------------------
+  // The renderer passes an absolute path from the daemon's source_path field.
+  // Files: shell.showItemInFolder selects the file in its parent folder.
+  // Directories (e.g. find_directory hits): shell.openPath opens the folder.
+  // -------------------------------------------------------------------------
+  ipcMain.on("atlas:reveal-in-finder", (_event, rawPath: unknown) => {
+    if (typeof rawPath !== "string" || rawPath.length === 0) return;
+    if (process.platform !== "darwin") {
+      console.warn("[atlas] reveal-in-finder is only supported on macOS");
+      return;
+    }
+    try {
+      if (!fs.existsSync(rawPath)) {
+        console.error("[atlas] reveal path does not exist:", rawPath);
+        return;
+      }
+      const stat = fs.statSync(rawPath);
+      if (stat.isDirectory()) {
+        void shell.openPath(rawPath);
+      } else {
+        shell.showItemInFolder(rawPath);
+      }
+    } catch (err) {
+      console.error("[atlas] reveal-in-finder failed:", err);
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // IPC handler: open Finder folder picker for filesystem indexing.
+  // -------------------------------------------------------------------------
+  // Returns the chosen absolute folder path to the renderer, or null when
+  // cancelled. The renderer then calls the daemon's /index/filesystem route.
+  // -------------------------------------------------------------------------
+  ipcMain.handle("atlas:pick-folder", async () => {
+    const focusedWindow = BrowserWindow.getFocusedWindow() ?? mainWindow;
+    const result = focusedWindow
+      ? await dialog.showOpenDialog(focusedWindow, {
+          title: "Choose folder to index",
+          properties: ["openDirectory", "createDirectory"],
+          buttonLabel: "Index Folder",
+        })
+      : await dialog.showOpenDialog({
+          title: "Choose folder to index",
+          properties: ["openDirectory", "createDirectory"],
+          buttonLabel: "Index Folder",
+        });
+    if (result.canceled || result.filePaths.length === 0) return null;
+    return result.filePaths[0] ?? null;
   });
 
   // -------------------------------------------------------------------------

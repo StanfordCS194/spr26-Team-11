@@ -68,9 +68,12 @@ export interface MockResult {
   //   Messages   → "Messages"
   //   Calendar   → "Calendar"
   //   Documents  → "Numbers" | "Pages" | "Figma" | "Code" | "Finder" (varies)
-  // Since the prototype doesn't actually open anything, this is purely a
-  // label; but picking native-macOS app names keeps the illusion believable.
   openInApp: string;
+
+  // Absolute path on disk for filesystem hits (and directory results from
+  // find_directory). Used by the Electron main process to reveal the item in
+  // Finder. Omitted for Mail / Messages / Calendar and mock-only results.
+  sourcePath?: string;
 }
 
 // One pre-baked query. Typing any case-insensitive substring of `trigger`

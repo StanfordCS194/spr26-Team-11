@@ -67,6 +67,18 @@ const atlasAPI = {
   logEvent(event: unknown): void {
     ipcRenderer.send("atlas:log", event);
   },
+
+  // Reveal a file or folder in Finder (macOS). Main validates the path and
+  // uses shell.showItemInFolder for files or shell.openPath for directories.
+  revealInFinder(absolutePath: string): void {
+    ipcRenderer.send("atlas:reveal-in-finder", absolutePath);
+  },
+
+  // Open a native folder picker and return the selected absolute path, or
+  // null when the user cancels.
+  pickFolder(): Promise<string | null> {
+    return ipcRenderer.invoke("atlas:pick-folder");
+  },
 };
 
 // `exposeInMainWorld` is the ONLY safe way to put something on window when

@@ -32,9 +32,14 @@
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { MockQuery, MockResult } from "./lib/types";
-import { shortDate } from "./lib/format";
+import { getAtlasSummaryText, shortDate } from "./lib/format";
 import { logEvent } from "./logger";
-import { askDaemon, fetchDaemonConfig, searchDaemon } from "./api";
+import {
+  askDaemon,
+  fetchDaemonConfig,
+  indexFilesystemPath,
+  searchDaemon,
+} from "./api";
 import { ResultRow } from "./components/ResultRow";
 
 export default function App() {
@@ -69,6 +74,9 @@ export default function App() {
   // routes through the local LLM, so the UI shows the loading indicator
   // while it's running just like the search path does.
   const [isAsking, setIsAsking] = useState<boolean>(false);
+  // True after the latest debounced /search or /ask finishes for the current
+  // query string. Drives empty-state copy vs the pre-search placeholder.
+  const [searchAttempted, setSearchAttempted] = useState<boolean>(false);
   // Holds the AbortController for the current /ask call so a second
   // Tab/Enter press cancels the previous request instead of stacking.
   const askControllerRef = useRef<AbortController | null>(null);
@@ -78,6 +86,8 @@ export default function App() {
   // on-device or sent to the configured cloud endpoint. Fetched once on
   // mount; daemon restart is required to switch modes anyway.
   const [parserMode, setParserMode] = useState<"local" | "cloud">("local");
+  // Whether the inline settings panel is open.
+  const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
   useEffect(() => {
     fetchDaemonConfig().then((c) => setParserMode(c.parser_mode));
   }, []);
@@ -99,7 +109,10 @@ export default function App() {
         console.error("[atlas] ask failed:", e);
       })
       .finally(() => {
-        if (!controller.signal.aborted) setIsAsking(false);
+        if (!controller.signal.aborted) {
+          setIsAsking(false);
+          setSearchAttempted(true);
+        }
       });
   };
 
@@ -107,8 +120,10 @@ export default function App() {
     if (!query.trim()) {
       setMatchedQuery(null);
       setIsSearching(false);
+      setSearchAttempted(false);
       return;
     }
+    setSearchAttempted(false);
     const controller = new AbortController();
     const timer = setTimeout(async () => {
       setIsSearching(true);
@@ -128,6 +143,7 @@ export default function App() {
         // stale fetches — but defensive ordering doesn't hurt.
         if (!controller.signal.aborted) {
           setIsSearching(false);
+          setSearchAttempted(true);
         }
       }
     }, 200);
@@ -222,7 +238,9 @@ export default function App() {
       queryId: matchedQuery.id,
       resultId: result.id,
     });
-    // No actual shell-out in the prototype — the event is the product.
+    if (result.openInApp === "Finder" && result.sourcePath) {
+      window.atlasAPI.revealInFinder(result.sourcePath);
+    }
   };
 
   // ---------------------------------------------------------------------------
@@ -251,6 +269,10 @@ export default function App() {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.preventDefault();
+        if (isSettingsOpen) {
+          setIsSettingsOpen(false);
+          return;
+        }
         window.atlasAPI.hide();
         return;
       }
@@ -291,7 +313,7 @@ export default function App() {
     // see the latest typed input. React re-registers the listener on each
     // change — still very cheap.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [matchedQuery, selectedIndex, query]);
+  }, [matchedQuery, selectedIndex, query, isSettingsOpen]);
 
   // ---------------------------------------------------------------------------
   // "Reset on re-open" hook.
@@ -307,6 +329,7 @@ export default function App() {
   useEffect(() => {
     const unsubscribe = window.atlasAPI.onShow(() => {
       setQuery("");
+      setIsSettingsOpen(false);
       // Re-fetch the daemon's parser mode every time the overlay shows so
       // toggling cloud_parser in ~/.atlas/config.json (followed by a daemon
       // restart) takes effect on the next Option+Space without needing to
@@ -431,6 +454,19 @@ export default function App() {
     };
   }, [matchedQuery?.id, selectedIndex]);
 
+  const trimmedQuery = query.trim();
+  const atlasSummary = getAtlasSummaryText(
+    !trimmedQuery
+      ? { kind: "idle" }
+      : isSearching || isAsking
+        ? { kind: "loading", asking: isAsking }
+        : matchedQuery
+          ? { kind: "results", results: matchedQuery.results }
+          : searchAttempted
+            ? { kind: "empty" }
+            : { kind: "placeholder" }
+  );
+
   return (
     <div className="overlay" ref={overlayRef}>
       {/* -----------------------------------------------------------------
@@ -495,6 +531,34 @@ export default function App() {
           </span>
         )}
         <button
+          className="settings-badge"
+          type="button"
+          onClick={() => setIsSettingsOpen((open) => !open)}
+          aria-label="Open Atlas settings"
+          aria-pressed={isSettingsOpen}
+          title="Settings"
+        >
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            aria-hidden="true"
+          >
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.325.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 0 1 1.37.49l1.296 2.247a1.125 1.125 0 0 1-.26 1.431l-1.003.827c-.293.241-.438.613-.43.992a7.723 7.723 0 0 1 0 .255c-.008.378.137.75.43.991l1.004.827c.424.35.534.955.26 1.43l-1.298 2.247a1.125 1.125 0 0 1-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.47 6.47 0 0 1-.22.128c-.331.183-.581.495-.644.869l-.213 1.281c-.09.543-.56.94-1.11.94h-2.594c-.55 0-1.019-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 0 1-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 0 1-1.369-.49l-1.297-2.247a1.125 1.125 0 0 1 .26-1.431l1.004-.827c.292-.24.437-.613.43-.991a6.932 6.932 0 0 1 0-.255c.007-.38-.138-.751-.43-.992l-1.004-.827a1.125 1.125 0 0 1-.26-1.43l1.297-2.247a1.125 1.125 0 0 1 1.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.086.22-.128.332-.183.582-.495.644-.869l.214-1.28Z"
+            />
+            <path
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z"
+            />
+          </svg>
+        </button>
+        <button
           className="esc-badge"
           type="button"
           onClick={() => window.atlasAPI.hide()}
@@ -506,13 +570,15 @@ export default function App() {
         </button>
       </div>
 
+      {isSettingsOpen && <SettingsPanel onClose={() => setIsSettingsOpen(false)} />}
+
       {/* -----------------------------------------------------------------
          Loading indicator. Visible whenever a backend fetch is in flight.
          Sits between the input and the results so the user sees that
          their query is being processed even before any results arrive
          (and during refinements over an existing matched query).
          ----------------------------------------------------------------- */}
-      {(isSearching || isAsking) && (
+      {!isSettingsOpen && (isSearching || isAsking) && (
         <div
           className="search-loading"
           role="status"
@@ -531,13 +597,15 @@ export default function App() {
          (via the ResizeObserver in this component → IPC → window resize)
          and shrinks back when the user clears or changes the input.
          ----------------------------------------------------------------- */}
-      {matchedQuery && <AtlasAnswer query={matchedQuery} />}
+      {!isSettingsOpen && atlasSummary && (
+        <AtlasAnswer query={matchedQuery} summary={atlasSummary} />
+      )}
 
       {/* -----------------------------------------------------------------
          Top K results list (Subtask 6).
          Rendered alongside the Atlas answer whenever a query matches.
          ----------------------------------------------------------------- */}
-      {matchedQuery && (
+      {!isSettingsOpen && matchedQuery && (
         <ResultsList
           results={matchedQuery.results}
           selectedIndex={selectedIndex}
@@ -559,7 +627,7 @@ export default function App() {
          long enough to scroll) resets to the top for each new result —
          the alternative is stale scroll state bleeding across rows.
          ----------------------------------------------------------------- */}
-      {matchedQuery && (
+      {!isSettingsOpen && matchedQuery && (
         <ExpandedPreview
           // key={matchedQuery.results[selectedIndex].id}
           result={matchedQuery.results[selectedIndex]}
@@ -573,8 +641,69 @@ export default function App() {
          navigate or open without one, so the hints would be misleading
          hints about non-functional shortcuts.
          ----------------------------------------------------------------- */}
-      {matchedQuery && <Footer />}
+      {!isSettingsOpen && matchedQuery && <Footer />}
     </div>
+  );
+}
+
+function SettingsPanel({ onClose }: { onClose: () => void }) {
+  const [isPickingFolder, setIsPickingFolder] = useState<boolean>(false);
+  const [lastIndexedFolder, setLastIndexedFolder] = useState<string | null>(null);
+  const [indexMessage, setIndexMessage] = useState<string>("");
+
+  const handleIndexFolder = async (): Promise<void> => {
+    setIsPickingFolder(true);
+    setIndexMessage("");
+    try {
+      const selectedFolder = await window.atlasAPI.pickFolder();
+      if (!selectedFolder) {
+        setIndexMessage("Folder selection cancelled.");
+        return;
+      }
+      await indexFilesystemPath(selectedFolder);
+      setLastIndexedFolder(selectedFolder);
+      setIndexMessage("Indexing started in the background.");
+    } catch (e) {
+      const message =
+        e instanceof Error ? e.message : "Failed to start filesystem indexing.";
+      setIndexMessage(message);
+    } finally {
+      setIsPickingFolder(false);
+    }
+  };
+
+  return (
+    <section className="settings-panel" aria-label="Atlas settings">
+      <div className="settings-panel__header">
+        <h2 className="settings-panel__title">Settings</h2>
+        <button
+          className="settings-panel__close"
+          type="button"
+          onClick={onClose}
+          aria-label="Close settings"
+        >
+          Done
+        </button>
+      </div>
+      <div className="settings-panel__section">
+        <h3>Indexing</h3>
+        <p>Select a folder from Finder to start filesystem indexing.</p>
+        <button
+          className="settings-panel__action"
+          type="button"
+          onClick={() => void handleIndexFolder()}
+          disabled={isPickingFolder}
+        >
+          {isPickingFolder ? "Choosing folder..." : "Choose Folder and Index"}
+        </button>
+        {lastIndexedFolder && (
+          <p className="settings-panel__meta">
+            Last selected folder: <code>{lastIndexedFolder}</code>
+          </p>
+        )}
+        {indexMessage && <p className="settings-panel__status">{indexMessage}</p>}
+      </div>
+    </section>
   );
 }
 
@@ -594,17 +723,27 @@ export default function App() {
 // import noise. If/when sibling zones (results list, expanded preview) get
 // long enough, all four can move to src/components/ in one pass.
 // =============================================================================
-function AtlasAnswer({ query }: { query: MockQuery }) {
+function AtlasAnswer({
+  query,
+  summary,
+}: {
+  query: MockQuery | null;
+  summary: string;
+}) {
   return (
     <div className="atlas-answer">
-      <div className="atlas-answer__label" aria-hidden="true">
-        {/* The dot is decorative (the "Atlas" text already labels the
-            source), so it's hidden from assistive tech via the parent's
-            aria-hidden. Screen readers announce only "Atlas" + answer text. */}
-        <span className="atlas-answer__dot" />
-        <span>Atlas</span>
+      <div className="atlas-answer__label-row">
+        <div className="atlas-answer__label" aria-hidden="true">
+          <span className="atlas-answer__dot" />
+          <span>Atlas</span>
+        </div>
+        <p className="atlas-answer__summary" role="status" aria-live="polite">
+          {summary}
+        </p>
       </div>
-      <p className="atlas-answer__body">{query.answer}</p>
+      {query?.answer ? (
+        <p className="atlas-answer__body">{query.answer}</p>
+      ) : null}
     </div>
   );
 }
@@ -690,9 +829,9 @@ function ExpandedPreview({
 }: {
   result: MockResult;
   // Called when the user activates "Open in [app] →". The parent logs the
-  // open_in_app event and (in the real app) would shell out to the named
-  // macOS app. Passed in rather than implemented here so the log writer has
-  // access to the matched-query id, which this component doesn't know.
+  // open_in_app event and shells out via IPC (Finder for Documents hits).
+  // Passed in rather than implemented here so the log writer has access to
+  // the matched-query id, which this component doesn't know.
   onOpen: () => void;
 }) {
   // Compact top-header "from": just the person's name, no email/role
@@ -764,9 +903,8 @@ function ExpandedPreview({
 
       {/*
        * "Open in [app] →" link. Implemented as <button> because clicking
-       * it doesn't navigate — in the real app it would shell out to the
-       * named macOS app. For this prototype it's a no-op; Subtask 9 will
-       * attach the "open_in_app" log event here. Styled to read as a
+       * it doesn't navigate — the parent shells out to the named macOS app
+       * (Finder for indexed files). Styled to read as a
        * link (blue text, arrow glyph) even though it's a button element.
        */}
       <div className="preview__open">
