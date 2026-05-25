@@ -14,9 +14,64 @@ from pathlib import Path
 import embed as embedder
 import store_tagged
 
-# Reuse the dataclass + tokenization from chunk-mode so the HTTP layer
-# doesn't need to know which retrieval module is active.
-from search import Result, _tokenize
+# Reuse the dataclass from chunk-mode so the HTTP layer doesn't need to
+# know which retrieval module is active. Tokenization here uses the
+# richer `_split_tokens` (splits CS107 -> cs, 107; SystemsHomework ->
+# systems, homework) instead of chunk-mode's plain `_tokenize`, because
+# document-mode topic-overlap is set intersection — it benefits from the
+# same identifier-aware splits on both sides.
+from search import Result
+from store_tagged import _split_tokens
+
+
+# Normalize identifier-shaped fragments in the query before it goes into
+# the bi-encoder so "cs107", "cs_107", and "cs-107" all embed identically
+# to "cs 107". This is a *minimal* normalization compared to _split_tokens
+# — case and length-1 tokens are preserved so the embedder still sees the
+# original natural-language structure for everything else.
+_EMBED_LD_RE = re.compile(r'([a-zA-Z])(\d)')
+_EMBED_DL_RE = re.compile(r'(\d)([a-zA-Z])')
+_EMBED_SEP_RE = re.compile(r'[_\-]+')
+
+
+def _normalize_for_embedding(query: str) -> str:
+    """Insert spaces at letter-digit boundaries and replace _ / - with
+    spaces. Keeps case, doesn't drop tokens — bi-encoder still sees the
+    natural-language form, just with identifier-style runs broken up the
+    same way the indexed topics + summary text describes them."""
+    q = _EMBED_LD_RE.sub(r'\1 \2', query)
+    q = _EMBED_DL_RE.sub(r'\1 \2', q)
+    q = _EMBED_SEP_RE.sub(' ', q)
+    return q
+
+
+def _adaptive_topic_weight(query_tokens: list[str], source_filter: str | None) -> float:
+    """Pick a topic_weight in [0.0, 0.5] from query character.
+
+    Mirrors search._adaptive_semantic_weight in spirit but inverted:
+    here `topic_weight` is the positive coefficient on the topic-overlap
+    side of the blend, so we *raise* it for identifier-shaped queries.
+
+    - Sources where path/topic carries no signal (imessage, gcal)
+      → 0.0 (semantic only).
+    - Digit-bearing token suggests a course code / version / project ID
+      → +0.15 (catches "cs107", "194w", "v2.3" generically without
+      requiring a hardcoded vocabulary).
+    - Short query (<= 2 split tokens) suggests the user is being specific
+      → +0.10. Counted in _split_tokens output so "cs107 homework" and
+      "cs 107 homework" yield identical weights (both produce 3 tokens
+      and both miss the bonus). The threshold catches "machine learning"
+      (2 tokens) without including "cs107 homework" (3).
+    - Base → 0.25, ceiling 0.5.
+    """
+    if source_filter in ("imessage", "gcal"):
+        return 0.0
+    w = 0.25
+    if any(any(c.isdigit() for c in t) for t in query_tokens):
+        w += 0.15
+    if len(query_tokens) <= 2:
+        w += 0.10
+    return min(0.5, w)
 
 
 def search(
@@ -24,17 +79,19 @@ def search(
     n_results: int = 10,
     source_filter: str | None = None,
 ) -> list[Result]:
-    """One-stage retrieval: cosine over summary embeddings, optionally
-    boosted by topic-token overlap. Returns Result objects compatible
-    with the existing /search response shape."""
-    embedding = embedder.embed_one(query)
-    query_tokens = _tokenize(query)
+    """One-stage retrieval: cosine over summary embeddings, boosted by
+    topic-token overlap (set intersection over identifier-aware tokens,
+    sqrt-shaped credit, query-aware topic_weight)."""
+    embedding = embedder.embed_one(_normalize_for_embedding(query))
+    query_tokens = _split_tokens(query)
+    topic_weight = _adaptive_topic_weight(query_tokens, source_filter)
 
     raw = store_tagged.query(
         embedding=embedding,
         query_tokens=query_tokens,
         n_results=n_results,
         source_filter=source_filter,
+        topic_weight=topic_weight,
     )
 
     results: list[Result] = []

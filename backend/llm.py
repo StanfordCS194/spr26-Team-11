@@ -255,30 +255,6 @@ def _extract_tags_local(file_label: str, sampled_text: str) -> dict:
     return _normalize_tags(_TagsSchema.model_validate_json(raw))
 
 
-def _extract_tags_cloud(file_label: str, sampled_text: str) -> dict:
-    import requests
-
-    endpoint = _config["cloud_endpoint"].rstrip("/")
-    payload = {
-        "model": _config["cloud_model"],
-        "messages": _build_tag_messages(file_label, sampled_text),
-        "response_format": {"type": "json_object"},
-        "max_tokens": 300,
-        "temperature": 0.0,
-    }
-    headers = {
-        "Authorization": f"Bearer {_get_api_key()}",
-        "Content-Type": "application/json",
-    }
-    r = requests.post(
-        f"{endpoint}/chat/completions",
-        json=payload, headers=headers, timeout=20.0,
-    )
-    r.raise_for_status()
-    content = r.json()["choices"][0]["message"]["content"]
-    return _normalize_tags(_TagsSchema.model_validate_json(content))
-
-
 # ---------------------------------------------------------------------------
 # Free-form synthesis — answers a question from a list of retrieved chunks.
 # Used by the /query RAG endpoint. Same backend mode as parse_query, but
@@ -383,9 +359,13 @@ def extract_tags(file_label: str, sampled_text: str) -> dict:
     fields may be empty strings/lists if the model decided it couldn't tell.
     Raises on backend failure — the indexer is responsible for error
     handling and skipping/retrying files.
+
+    Always uses the local LLM regardless of `_MODE`. Indexing many files
+    against a cloud endpoint hits rate limits hard and adds significant
+    per-file latency for marginal quality gain; keeping tag extraction
+    on-device avoids both. The cloud parser still handles `parse_query`
+    and `synthesize_answer` at query time when `_MODE == "cloud"`.
     """
-    if _MODE == "cloud":
-        return _extract_tags_cloud(file_label, sampled_text)
     return _extract_tags_local(file_label, sampled_text)
 
 

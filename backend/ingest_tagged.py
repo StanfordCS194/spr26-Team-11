@@ -5,19 +5,24 @@ Document-mode indexer.
 For each indexable file:
   1. Parse to text (reusing ingest._parse_file)
   2. Sample a stitched excerpt across the file (tagging.sample_file_text)
-  3. Ask the LLM for {topics, document_type, summary} (tagging.extract_document_tags)
+  3. Ask the local LLM for {topics, document_type, summary}
   4. Embed the LLM-generated summary (embed.embed_one)
   5. Upsert one row into the tagged store
 
-Failure policy: if any step raises for a single file, log it and skip
-that file. One bad file shouldn't break the whole index run.
+Always uses the local LLM (Qwen2.5-0.5B via mlx-lm) for tag extraction
+regardless of the daemon's parser mode. Cloud parsing is still honored
+for query-time `parse_query` / `synthesize_answer` — see llm.extract_tags
+for the rationale.
 
-Speed envelope (per the plan): roughly 2 s/file on local Qwen-0.5B, 0.5–1
-s/file on cloud Groq llama-3.1-8b. For 2,500 files that's ~80 min local,
-~30 min cloud.
+Failure policy: if any step raises for a single file, log it and skip
+that file. One bad file shouldn't break the whole index run. Local LLM
+failures are typically deterministic (OOM, tokenizer choke), so no
+retry loop — retrying the same input won't help.
+
+Speed envelope: roughly 2 s/file on local Qwen-0.5B. For 2,500 files
+that's ~80 min.
 """
 import logging
-import time
 from pathlib import Path
 
 from config import INDEXABLE_EXTENSIONS, EXCLUDED_DIRS
@@ -28,28 +33,13 @@ from ingest import _parse_file, _path_to_context
 
 log = logging.getLogger("atlas.daemon")
 
-# Retry policy for transient LLM failures (rate limits, network blips,
-# malformed JSON). After this many attempts a file is logged + skipped.
-_MAX_RETRIES = 3
-_INITIAL_BACKOFF_SEC = 5.0
-
-# Proactive pacing for the cloud LLM path. Groq's free tier has two
-# overlapping limits: 30 RPM and ~6,000 TPM (tokens per minute) for
-# llama-3.1-8b-instant. Tag extraction averages ~1,100 tokens per call
-# (system + sampled file excerpt + 300-token output), so the TPM cap
-# binds first: 6000 / 1100 ≈ 5.5 RPM => one call every ~11 s. We pace at
-# 8 s with a small safety margin; running slightly under TPM avoids the
-# 429 storms (each lost ~30+ s to retry backoff) and keeps the run
-# steady. No-op for local mode (no rate limit).
-_CLOUD_MIN_INTERVAL_SEC = 8.0
-
 
 def index_filesystem(
     root: Path,
     verbose: bool = False,
     progress_callback=None,
 ) -> int:
-    """Walk `root`, tag each file via the LLM, store summary embeddings.
+    """Walk `root`, tag each file via the local LLM, store summary embeddings.
     Returns the number of files successfully indexed."""
     files = [
         p for p in root.rglob("*")
@@ -61,12 +51,6 @@ def index_filesystem(
     indexed = 0
     failed = 0
 
-    # Detect cloud mode once so we can apply pacing without re-loading
-    # config every iteration.
-    import llm as _llm
-    cloud_mode = _llm.mode() == "cloud"
-    last_llm_call_ts = 0.0
-
     for path in files:
         try:
             text = _parse_file(path)
@@ -75,54 +59,9 @@ def index_filesystem(
 
             context_label, path_tokens_str = _path_to_context(path)
 
-            # Retry the LLM call with exponential backoff on transient
-            # errors. The two dominant failures with Groq are:
-            #   - HTTP 429 (rate limit). Groq's 429 response carries a
-            #     Retry-After header telling us exactly how long to sleep;
-            #     we honor it instead of guessing with exponential backoff.
-            #   - Schema validation errors (the model occasionally returns
-            #     summary as a list of strings or other variant). The
-            #     normalizer in llm.py handles the most common variants;
-            #     anything left is a hard schema mismatch that retrying
-            #     won't fix, so we don't retry validation errors.
-            tags = None
-            backoff = _INITIAL_BACKOFF_SEC
-            for attempt in range(_MAX_RETRIES):
-                try:
-                    # Proactive cloud-mode pacing — stay under 30 RPM.
-                    if cloud_mode:
-                        elapsed = time.time() - last_llm_call_ts
-                        if elapsed < _CLOUD_MIN_INTERVAL_SEC:
-                            time.sleep(_CLOUD_MIN_INTERVAL_SEC - elapsed)
-                    tags = tagging.extract_document_tags(
-                        context_label or str(path), text,
-                    )
-                    last_llm_call_ts = time.time()
-                    break
-                except Exception as e:
-                    # Don't retry deterministic failures.
-                    is_validation_error = "validation error" in str(e).lower()
-                    if is_validation_error or attempt == _MAX_RETRIES - 1:
-                        raise
-
-                    # Prefer Groq's Retry-After header if the underlying
-                    # exception is an HTTP error carrying it.
-                    sleep_for = backoff
-                    resp = getattr(e, "response", None)
-                    if resp is not None:
-                        retry_after = resp.headers.get("Retry-After") if resp.headers else None
-                        if retry_after:
-                            try:
-                                sleep_for = max(float(retry_after), 1.0)
-                            except (TypeError, ValueError):
-                                pass
-
-                    log.info(
-                        "tagged index: retrying %s after %.1fs (attempt %d/%d): %s",
-                        path.name, sleep_for, attempt + 1, _MAX_RETRIES, e,
-                    )
-                    time.sleep(sleep_for)
-                    backoff *= 2
+            tags = tagging.extract_document_tags(
+                context_label or str(path), text,
+            )
 
             # The embedding target is "topics + summary" stitched together.
             # Topics alone are too sparse for cosine; the summary alone
