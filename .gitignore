@@ -16,6 +16,7 @@ backend/eval/runs/
 
 # Google OAuth client credentials — every developer downloads their own
 backend/gcal_client.json
+backend/gmail_client.json
 
 # Node / Electron
 node_modules/

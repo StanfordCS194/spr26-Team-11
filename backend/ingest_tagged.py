@@ -233,3 +233,50 @@ def index_gcal(progress_callback=None, verbose: bool = False) -> int:
             print(f"  tagged event: {source_path}")
 
     return indexed
+
+
+# ---------------------------------------------------------------------------
+# Gmail ingestion (document mode). One row per message.
+# ---------------------------------------------------------------------------
+
+def index_gmail(progress_callback=None, verbose: bool = False) -> int:
+    """Authorize, fetch, and store one document row per Gmail message."""
+    import gmail
+
+    creds = gmail.authorize(interactive=True)
+    if creds is None:
+        return 0
+
+    messages = gmail.fetch_messages(creds)
+    total = len(messages)
+    if progress_callback is not None:
+        progress_callback(0, total)
+
+    indexed = 0
+    for msg in messages:
+        chunks = gmail.message_to_chunks(msg)
+        if not chunks:
+            continue
+
+        source_path = gmail._message_source_path(msg)
+        embeddable_text = "\n".join(t for _, t, _ in chunks)
+        snippet_text = "\n".join(s for _, _, s in chunks)
+        summary_embedding = embedder.embed_one(embeddable_text)
+
+        store_tagged.add_document(
+            source_path=source_path,
+            source_type="gmail",
+            document_type="email",
+            topics=[],
+            path_tokens="",
+            summary=snippet_text,
+            summary_embedding=summary_embedding,
+        )
+
+        indexed += 1
+        if progress_callback is not None:
+            progress_callback(indexed, total)
+        if verbose:
+            print(f"  tagged message: {source_path}")
+
+    return indexed
