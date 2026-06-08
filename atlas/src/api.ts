@@ -40,16 +40,16 @@ function pathDirname(path: string): string {
 // -----------------------------------------------------------------------------
 // Source-type mapping.
 // -----------------------------------------------------------------------------
-// The backend speaks "filesystem" / "imessage" / "gcal". The UI's SourceType
-// union is "Mail" | "Messages" | "Documents" | "Calendar". Filesystem chunks
-// map to "Documents", iMessage to "Messages", gcal to "Calendar". Mail isn't
-// indexed yet.
+// The backend speaks "filesystem" / "imessage" / "gcal" / "gmail". The UI's
+// SourceType union maps each to Documents / Messages / Calendar / Mail.
 function mapSource(backend: string): SourceType {
   switch (backend) {
     case "imessage":
       return "Messages";
     case "gcal":
       return "Calendar";
+    case "gmail":
+      return "Mail";
     case "filesystem":
     default:
       return "Documents";
@@ -82,6 +82,12 @@ function mapResult(
     subtitle = "Calendar event";
     from = "Google Calendar";
     openInApp = "Calendar";
+  } else if (source === "Mail") {
+    const firstNewline = r.snippet.indexOf("\n");
+    title = firstNewline >= 0 ? r.snippet.slice(0, firstNewline) : r.snippet;
+    subtitle = "Gmail message";
+    from = "Gmail";
+    openInApp = "Mail";
   } else {
     title = pathBasename(r.source_path);
     subtitle = pathDirname(r.source_path);
