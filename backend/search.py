@@ -18,6 +18,9 @@ class Result:
     source_path: str
     snippet: str
     score: float  # lower = more similar (after rerank: 1 - sigmoid(rerank_logit))
+    # Human-readable name for the source (e.g. resolved iMessage contact
+    # name). Empty if no friendlier name than source_path is available.
+    display_name: str = ""
     # Full chunk text. Used by the /query RAG path which needs more than
     # the 300-char snippet to feed the LLM. Not serialized over /search.
     text: str = ""
@@ -94,6 +97,7 @@ def search(query: str, n_results: int = 10, source_filter: str | None = None) ->
             source_path=meta["source_path"],
             snippet=doc[:300].replace("\n", " "),
             score=round(1.0 / (1.0 + math.exp(rs)), 4),
+            display_name=meta.get("display_name", ""),
             text=doc,
         )
         for (doc, meta, _), rs in zip(items, rerank_scores)

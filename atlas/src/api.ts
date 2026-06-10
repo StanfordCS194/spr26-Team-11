@@ -21,6 +21,7 @@ interface BackendSearchResult {
   source_path: string;
   snippet: string;
   score: number;
+  display_name: string;
 }
 
 // -----------------------------------------------------------------------------
@@ -69,9 +70,10 @@ function mapResult(
   let from: string;
   let openInApp: string;
   if (source === "Messages") {
-    title = r.source_path;
+    const contactName = r.display_name || r.source_path;
+    title = contactName;
     subtitle = "iMessage thread";
-    from = r.source_path;
+    from = contactName;
     openInApp = "Messages";
   } else if (source === "Calendar") {
     // r.snippet is "title\n\ndescription..." (see backend/gcal.py). The first
