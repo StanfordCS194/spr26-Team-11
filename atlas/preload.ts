@@ -74,6 +74,11 @@ const atlasAPI = {
     ipcRenderer.send("atlas:reveal-in-finder", absolutePath);
   },
 
+  // Open the iMessage conversation with `handle` (phone number or email).
+  openInMessages(handle: string): void {
+    ipcRenderer.send("atlas:open-in-messages", handle);
+  },
+
   // Open a native folder picker and return the selected absolute path, or
   // null when the user cancels.
   pickFolder(): Promise<string | null> {
