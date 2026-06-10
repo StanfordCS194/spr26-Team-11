@@ -41,8 +41,18 @@ function pathDirname(path: string): string {
 // -----------------------------------------------------------------------------
 // Source-type mapping.
 // -----------------------------------------------------------------------------
-// The backend speaks "filesystem" / "imessage" / "gcal" / "gmail". The UI's
-// SourceType union maps each to Documents / Messages / Calendar / Mail.
+// The backend speaks "filesystem" / "imessage" / "gcal". The UI's SourceType
+// union is "Mail" | "Messages" | "Documents" | "Calendar". Filesystem chunks
+// map to "Documents", iMessage to "Messages", gcal to "Calendar". Mail isn't
+// indexed yet.
+function parseImessageContact(sourcePath: string): { name: string; handle: string } {
+  const match = sourcePath.match(/^(.+?)\s+\(([^)]+)\)$/);
+  if (match) {
+    return { name: match[1].trim(), handle: match[2].trim() };
+  }
+  return { name: "", handle: sourcePath };
+}
+
 function mapSource(backend: string): SourceType {
   switch (backend) {
     case "imessage":
@@ -69,12 +79,14 @@ function mapResult(
   let subtitle: string;
   let from: string;
   let openInApp: string;
+  let messageHandle: string | undefined;
   if (source === "Messages") {
-    const contactName = r.display_name || r.source_path;
-    title = contactName;
-    subtitle = "iMessage thread";
-    from = contactName;
+    const { name, handle } = parseImessageContact(r.source_path);
+    title = name || handle;
+    subtitle = name ? handle : "iMessage thread";
+    from = name ? `${name} (${handle})` : handle;
     openInApp = "Messages";
+    messageHandle = handle;
   } else if (source === "Calendar") {
     // r.snippet is "title\n\ndescription..." (see backend/gcal.py). The first
     // line is the event title; the rest is body. r.source_path is opaque
@@ -113,6 +125,7 @@ function mapResult(
     highlights: queryTerms,
     openInApp,
     ...(source === "Documents" ? { sourcePath: r.source_path } : {}),
+    ...(messageHandle ? { messageHandle } : {}),
   };
 }
 

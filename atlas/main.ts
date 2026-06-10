@@ -511,6 +511,24 @@ app.whenReady().then(() => {
   });
 
   // -------------------------------------------------------------------------
+  // IPC handler: open an iMessage conversation by phone number or email.
+  // -------------------------------------------------------------------------
+  ipcMain.on("atlas:open-in-messages", (_event, rawHandle: unknown) => {
+    if (typeof rawHandle !== "string" || rawHandle.trim().length === 0) return;
+    if (process.platform !== "darwin") {
+      console.warn("[atlas] open-in-messages is only supported on macOS");
+      return;
+    }
+    const handle = rawHandle.trim();
+    const url = handle.includes("@")
+      ? `imessage://${encodeURIComponent(handle)}`
+      : `imessage://${encodeURIComponent(handle.replace(/\s/g, ""))}`;
+    void shell.openExternal(url).catch((err) => {
+      console.error("[atlas] open-in-messages failed:", err);
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // IPC handler: open Finder folder picker for filesystem indexing.
   // -------------------------------------------------------------------------
   // Returns the chosen absolute folder path to the renderer, or null when

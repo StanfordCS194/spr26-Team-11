@@ -4,6 +4,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
+import contacts
 import store
 import embed as embedder
 import contacts
@@ -197,6 +198,9 @@ def index_imessage(verbose: bool = False) -> int:
             "Grant Full Disk Access to Terminal in System Settings > Privacy & Security."
         )
 
+    contact_lookup = contacts.load_handle_display_names()
+    store.delete_by_source_type("imessage")
+
     con = sqlite3.connect(f"file:{IMESSAGE_DB}?mode=ro", uri=True)
     cur = con.cursor()
 
@@ -224,51 +228,36 @@ def index_imessage(verbose: bool = False) -> int:
     phone_map, email_map = contacts.load_contact_maps()
 
     indexed = 0
-    for contact, messages in conversations.items():
-        display_name = contacts.resolve_contact_name(contact, phone_map, email_map) or contact
+    for handle_id, messages in conversations.items():
+        display_name = contacts.lookup_display_name(handle_id, contact_lookup)
+        speaker_label = display_name or handle_id
+        source_path = contacts.format_contact_label(handle_id, contact_lookup)
 
-        sessions = _split_sessions(messages)
+        lines = []
+        for body, apple_date, is_from_me in messages:
+            speaker = "Me" if is_from_me else speaker_label
+            ts = datetime(2001, 1, 1, tzinfo=timezone.utc).timestamp() + apple_date / 1e9
+            dt = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d")
+            lines.append(f"[{dt}] {speaker}: {body}")
 
-        # Build [date] speaker: body text for each session.
-        session_texts = []
-        for session in sessions:
-            lines = []
-            for body, apple_date, is_from_me in session:
-                speaker = "Me" if is_from_me else display_name
-                dt = datetime.fromtimestamp(
-                    datetime(2001, 1, 1, tzinfo=timezone.utc).timestamp() + apple_date / 1e9,
-                    tz=timezone.utc,
-                ).strftime("%Y-%m-%d")
-                lines.append(f"[{dt}] {speaker}: {body}")
-            session_texts.append("\n".join(lines))
+        text = "\n".join(lines)
+        chunks = chunk_text(text)
+        if not chunks:
+            continue
 
-        # Merge sessions whose text falls under chunk_text()'s 30-char floor
-        # into a neighboring session so short exchanges aren't dropped.
-        merged_sessions: list[list[tuple]] = []
-        merged_texts: list[str] = []
-        for session, text in zip(sessions, session_texts):
-            if merged_sessions and len(text.strip()) <= 30:
-                merged_sessions[-1].extend(session)
-                merged_texts[-1] = merged_texts[-1] + "\n" + text
-            else:
-                merged_sessions.append(list(session))
-                merged_texts.append(text)
-        if len(merged_sessions) > 1 and len(merged_texts[0].strip()) <= 30:
-            merged_sessions[1] = merged_sessions[0] + merged_sessions[1]
-            merged_texts[1] = merged_texts[0] + "\n" + merged_texts[1]
-            merged_sessions.pop(0)
-            merged_texts.pop(0)
-
-        store.delete_source("imessage", contact)
-
-        chunk_count = 0
-        for session, text in zip(merged_sessions, merged_texts):
-            session_chunks = chunk_text(text)
-            if not session_chunks:
-                continue
-
-            session_start_iso = _apple_date_to_iso(session[0][1])
-            session_key = f"{contact}:{session_start_iso}"
+        ids = [_chunk_id("imessage", handle_id, i) for i in range(len(chunks))]
+        metadatas = [
+            {"source_type": "imessage", "source_path": source_path, "chunk_index": i, "timestamp": ""}
+            for i in range(len(chunks))
+        ]
+        embeddings = embedder.embed(chunks)
+        store.add(
+            ids=ids,
+            embeddings=embeddings,
+            documents=chunks,
+            metadatas=metadatas,
+            path_tokens=[""] * len(chunks),
+        )
 
             ids = [_chunk_id("imessage", session_key, i) for i in range(len(session_chunks))]
             metadatas = [
@@ -289,7 +278,7 @@ def index_imessage(verbose: bool = False) -> int:
         if chunk_count:
             indexed += 1
         if verbose:
-            print(f"  indexed conversation with: {contact} ({chunk_count} chunks across {len(merged_sessions)} sessions)")
+            print(f"  indexed conversation with: {source_path} ({len(chunks)} chunks)")
 
     return indexed
 

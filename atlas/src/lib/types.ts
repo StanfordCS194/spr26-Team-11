@@ -74,6 +74,10 @@ export interface MockResult {
   // find_directory). Used by the Electron main process to reveal the item in
   // Finder. Omitted for Mail / Messages / Calendar and mock-only results.
   sourcePath?: string;
+
+  // Phone number or Apple ID email for iMessage hits. Used to open the
+  // conversation in Messages via the imessage:// URL scheme.
+  messageHandle?: string;
 }
 
 // One pre-baked query. Typing any case-insensitive substring of `trigger`

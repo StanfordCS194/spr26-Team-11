@@ -240,6 +240,8 @@ export default function App() {
     });
     if (result.openInApp === "Finder" && result.sourcePath) {
       window.atlasAPI.revealInFinder(result.sourcePath);
+    } else if (result.openInApp === "Messages" && result.messageHandle) {
+      window.atlasAPI.openInMessages(result.messageHandle);
     }
   };
 

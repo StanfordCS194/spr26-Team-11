@@ -215,6 +215,14 @@ def delete_source(source_type: str, source_path: str):
     _invalidate_cache()
 
 
+def delete_by_source_type(source_type: str):
+    con = _conn()
+    con.execute("DELETE FROM chunks WHERE source_type = ?", (source_type,))
+    con.commit()
+    con.close()
+    _invalidate_cache()
+
+
 def clear():
     con = _conn()
     con.execute("DELETE FROM chunks")
