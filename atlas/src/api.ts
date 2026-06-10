@@ -139,13 +139,18 @@ function buildQuery(
   trimmed: string,
   results: BackendSearchResult[],
   idPrefix: "search" | "ask",
+  enabledSources?: SourceType[],
 ): MockQuery | null {
-  if (results.length === 0) return null;
   const queryId = `${idPrefix}-${Date.now()}`;
   const queryTerms = trimmed
     .toLowerCase()
     .split(/\s+/)
     .filter((t) => t.length > 1);
+  const mappedResults = results.map((r, i) => mapResult(r, queryId, i, queryTerms));
+  const filteredResults = enabledSources
+    ? mappedResults.filter((r) => enabledSources.includes(r.source))
+    : mappedResults;
+  if (filteredResults.length === 0) return null;
   return {
     id: queryId,
     trigger: trimmed,
@@ -154,7 +159,7 @@ function buildQuery(
     // RAG-style answer synthesis). The AtlasAnswer block will render its
     // blank state in both cases until that endpoint is wired.
     answer: "",
-    results: results.map((r, i) => mapResult(r, queryId, i, queryTerms)),
+    results: filteredResults,
   };
 }
 
@@ -169,9 +174,11 @@ function buildQuery(
 export async function searchDaemon(
   query: string,
   signal: AbortSignal,
+  enabledSources?: SourceType[],
 ): Promise<MockQuery | null> {
   const trimmed = query.trim();
   if (!trimmed) return null;
+  if (enabledSources?.length === 0) return null;
 
   const url = `${DAEMON_URL}/search?q=${encodeURIComponent(trimmed)}&limit=10`;
   const res = await fetch(url, { signal });
@@ -179,7 +186,7 @@ export async function searchDaemon(
     throw new Error(`Daemon /search returned ${res.status}`);
   }
   const results: BackendSearchResult[] = await res.json();
-  return buildQuery(trimmed, results, "search");
+  return buildQuery(trimmed, results, "search", enabledSources);
 }
 
 /**
@@ -194,9 +201,11 @@ export async function searchDaemon(
 export async function askDaemon(
   query: string,
   signal: AbortSignal,
+  enabledSources?: SourceType[],
 ): Promise<MockQuery | null> {
   const trimmed = query.trim();
   if (!trimmed) return null;
+  if (enabledSources?.length === 0) return null;
 
   const res = await fetch(`${DAEMON_URL}/ask`, {
     method: "POST",
@@ -208,7 +217,7 @@ export async function askDaemon(
     throw new Error(`Daemon /ask returned ${res.status}`);
   }
   const results: BackendSearchResult[] = await res.json();
-  return buildQuery(trimmed, results, "ask");
+  return buildQuery(trimmed, results, "ask", enabledSources);
 }
 
 /**
