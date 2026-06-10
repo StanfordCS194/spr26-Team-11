@@ -31,7 +31,7 @@
 // =============================================================================
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { MockQuery, MockResult } from "./lib/types";
+import type { MockQuery, MockResult, SourceType } from "./lib/types";
 import { getAtlasSummaryText, shortDate } from "./lib/format";
 import { logEvent } from "./logger";
 import {
@@ -41,6 +41,64 @@ import {
   searchDaemon,
 } from "./api";
 import { ResultRow } from "./components/ResultRow";
+
+type SourceSettings = Record<SourceType, boolean>;
+
+const SOURCE_SETTINGS_STORAGE_KEY = "atlas.searchSourceSettings";
+
+const SEARCH_SOURCE_OPTIONS: Array<{
+  source: SourceType;
+  label: string;
+  description: string;
+}> = [
+  {
+    source: "Messages",
+    label: "Messages",
+    description: "iMessage conversations and threads",
+  },
+  {
+    source: "Calendar",
+    label: "Calendar",
+    description: "Google Calendar events",
+  },
+  {
+    source: "Documents",
+    label: "Finder",
+    description: "Indexed files and folders",
+  },
+  {
+    source: "Mail",
+    label: "Mail",
+    description: "Gmail messages",
+  },
+];
+
+const DEFAULT_SOURCE_SETTINGS: SourceSettings = {
+  Mail: true,
+  Messages: true,
+  Documents: true,
+  Calendar: true,
+};
+
+function loadSourceSettings(): SourceSettings {
+  try {
+    const raw = window.localStorage.getItem(SOURCE_SETTINGS_STORAGE_KEY);
+    if (!raw) return DEFAULT_SOURCE_SETTINGS;
+    const parsed = JSON.parse(raw) as Partial<Record<SourceType, unknown>>;
+    return SEARCH_SOURCE_OPTIONS.reduce<SourceSettings>(
+      (settings, option) => ({
+        ...settings,
+        [option.source]:
+          typeof parsed[option.source] === "boolean"
+            ? parsed[option.source]
+            : DEFAULT_SOURCE_SETTINGS[option.source],
+      }),
+      { ...DEFAULT_SOURCE_SETTINGS }
+    );
+  } catch {
+    return DEFAULT_SOURCE_SETTINGS;
+  }
+}
 
 export default function App() {
   // ---------------------------------------------------------------------------
@@ -88,6 +146,21 @@ export default function App() {
   const [parserMode, setParserMode] = useState<"local" | "cloud">("local");
   // Whether the inline settings panel is open.
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
+  const [sourceSettings, setSourceSettings] = useState<SourceSettings>(() =>
+    loadSourceSettings()
+  );
+  const enabledSources = SEARCH_SOURCE_OPTIONS.filter(
+    (option) => sourceSettings[option.source]
+  ).map((option) => option.source);
+  const enabledSourceKey = enabledSources.join(",");
+
+  useEffect(() => {
+    window.localStorage.setItem(
+      SOURCE_SETTINGS_STORAGE_KEY,
+      JSON.stringify(sourceSettings)
+    );
+  }, [sourceSettings]);
+
   useEffect(() => {
     fetchDaemonConfig().then((c) => setParserMode(c.parser_mode));
   }, []);
@@ -99,7 +172,7 @@ export default function App() {
     const controller = new AbortController();
     askControllerRef.current = controller;
     setIsAsking(true);
-    askDaemon(trimmed, controller.signal)
+    askDaemon(trimmed, controller.signal, enabledSources)
       .then((result) => {
         // null = no results; treat the same as a search returning nothing.
         setMatchedQuery(result);
@@ -128,7 +201,7 @@ export default function App() {
     const timer = setTimeout(async () => {
       setIsSearching(true);
       try {
-        const result = await searchDaemon(query, controller.signal);
+        const result = await searchDaemon(query, controller.signal, enabledSources);
         setMatchedQuery(result);
       } catch (e) {
         if ((e as Error).name === "AbortError") return;
@@ -151,7 +224,7 @@ export default function App() {
       clearTimeout(timer);
       controller.abort();
     };
-  }, [query]);
+  }, [query, enabledSourceKey]);
 
   // ---------------------------------------------------------------------------
   // Selected result index (Subtask 6).
@@ -315,7 +388,7 @@ export default function App() {
     // see the latest typed input. React re-registers the listener on each
     // change — still very cheap.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [matchedQuery, selectedIndex, query, isSettingsOpen]);
+  }, [matchedQuery, selectedIndex, query, isSettingsOpen, enabledSourceKey]);
 
   // ---------------------------------------------------------------------------
   // "Reset on re-open" hook.
@@ -572,7 +645,18 @@ export default function App() {
         </button>
       </div>
 
-      {isSettingsOpen && <SettingsPanel onClose={() => setIsSettingsOpen(false)} />}
+      {isSettingsOpen && (
+        <SettingsPanel
+          sourceSettings={sourceSettings}
+          onSourceToggle={(source) =>
+            setSourceSettings((current) => ({
+              ...current,
+              [source]: !current[source],
+            }))
+          }
+          onClose={() => setIsSettingsOpen(false)}
+        />
+      )}
 
       {/* -----------------------------------------------------------------
          Loading indicator. Visible whenever a backend fetch is in flight.
@@ -648,7 +732,15 @@ export default function App() {
   );
 }
 
-function SettingsPanel({ onClose }: { onClose: () => void }) {
+function SettingsPanel({
+  sourceSettings,
+  onSourceToggle,
+  onClose,
+}: {
+  sourceSettings: SourceSettings;
+  onSourceToggle: (source: SourceType) => void;
+  onClose: () => void;
+}) {
   const [isPickingFolder, setIsPickingFolder] = useState<boolean>(false);
   const [lastIndexedFolder, setLastIndexedFolder] = useState<string | null>(null);
   const [indexMessage, setIndexMessage] = useState<string>("");
@@ -686,6 +778,30 @@ function SettingsPanel({ onClose }: { onClose: () => void }) {
         >
           Done
         </button>
+      </div>
+      <div className="settings-panel__section">
+        <h3>Search Results</h3>
+        <p>Choose which sources Atlas can show in search results.</p>
+        <div className="settings-panel__toggles">
+          {SEARCH_SOURCE_OPTIONS.map((option) => (
+            <label className="source-toggle" key={option.source}>
+              <span className="source-toggle__text">
+                <span className="source-toggle__label">{option.label}</span>
+                <span className="source-toggle__description">
+                  {option.description}
+                </span>
+              </span>
+              <input
+                className="source-toggle__input"
+                type="checkbox"
+                role="switch"
+                checked={sourceSettings[option.source]}
+                onChange={() => onSourceToggle(option.source)}
+              />
+              <span className="source-toggle__switch" aria-hidden="true" />
+            </label>
+          ))}
+        </div>
       </div>
       <div className="settings-panel__section">
         <h3>Indexing</h3>
