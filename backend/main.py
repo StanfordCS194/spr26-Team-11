@@ -119,6 +119,7 @@ class SearchResult(BaseModel):
     source_path: str
     snippet: str
     score: float
+    display_name: str = ""
 
 
 class AskRequest(BaseModel):
@@ -242,6 +243,15 @@ def index_imessage(background: BackgroundTasks):
     return {"status": "started", "target": "imessage"}
 
 
+@app.post("/index/imessage/contacts")
+def backfill_imessage_contacts():
+    """Re-resolve iMessage contact names from the Contacts database for
+    already-indexed conversations. Cheap (no re-embedding) — runs
+    synchronously since it's just SQL UPDATEs."""
+    updated = ingest.backfill_imessage_contacts()
+    return {"status": "done", "chunks_updated": updated}
+
+
 @app.post("/index/gcal")
 def index_gcal(background: BackgroundTasks):
     if not _start_job("gcal"):
@@ -312,7 +322,7 @@ def search(
     log.info("searching: %s", q)
     results = search_mod.search(q, n_results=limit, source_filter=source)
     log.info("returned %d results", len(results))
-    return [SearchResult(source_type=r.source_type, source_path=r.source_path, snippet=r.snippet, score=r.score) for r in results]
+    return [SearchResult(source_type=r.source_type, source_path=r.source_path, snippet=r.snippet, score=r.score, display_name=r.display_name) for r in results]
 
 
 @app.post("/ask", response_model=list[SearchResult])
@@ -321,7 +331,7 @@ def ask(req: AskRequest):
     log.info("ask: %s", req.query)
     results = search_mod.ask(req.query, n_results=req.limit)
     log.info("returned %d results", len(results))
-    return [SearchResult(source_type=r.source_type, source_path=r.source_path, snippet=r.snippet, score=r.score) for r in results]
+    return [SearchResult(source_type=r.source_type, source_path=r.source_path, snippet=r.snippet, score=r.score, display_name=r.display_name) for r in results]
 
 
 @app.post("/query", response_model=QueryResponse)
@@ -337,6 +347,7 @@ def query(req: QueryRequest):
             source_path=r.source_path,
             snippet=r.snippet,
             score=r.score,
+            display_name=r.display_name,
         )
         for r in out["sources"]
     ]

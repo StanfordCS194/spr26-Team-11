@@ -358,6 +358,17 @@ def reindex(
     console.print(f"[green]Re-indexed {result['indexed']} files[/green]")
 
 
+@app.command("backfill-contacts")
+def backfill_contacts():
+    """Re-resolve iMessage contact names from the Contacts app for already-
+    indexed conversations (no re-embedding needed)."""
+    _ensure_daemon()
+    r = requests.post(f"{DAEMON_URL}/index/imessage/contacts")
+    r.raise_for_status()
+    body = r.json()
+    console.print(f"[green]Updated display names for {body['chunks_updated']} chunks[/green]")
+
+
 @app.command()
 def status():
     """Show index statistics."""

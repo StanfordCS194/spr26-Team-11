@@ -77,14 +77,14 @@ def _populate_cache(con: sqlite3.Connection) -> None:
         return
     rows = con.execute(
         "SELECT id, source_type, source_path, chunk_index, "
-        "timestamp, embedding, path_tokens FROM chunks"
+        "timestamp, embedding, path_tokens, display_name FROM chunks"
     ).fetchall()
     if rows:
-        ids, stypes, spaths, cidxs, tss, blobs, ptokens = zip(*rows)
+        ids, stypes, spaths, cidxs, tss, blobs, ptokens, dnames = zip(*rows)
         _cache_embeddings = np.stack(
             [np.frombuffer(b, dtype=np.float32) for b in blobs]
         )
-        _cache_meta = list(zip(ids, stypes, spaths, cidxs, tss, ptokens))
+        _cache_meta = list(zip(ids, stypes, spaths, cidxs, tss, ptokens, dnames))
         _cache_path_vocab, _cache_path_matrix = _build_path_index(ptokens)
     else:
         _cache_embeddings = np.empty((0, 384), dtype=np.float32)
@@ -129,16 +129,18 @@ def _conn() -> sqlite3.Connection:
             chunk_index  INTEGER NOT NULL,
             timestamp    TEXT,
             embedding    BLOB NOT NULL,
-            path_tokens  TEXT DEFAULT ''
+            path_tokens  TEXT DEFAULT '',
+            display_name TEXT DEFAULT ''
         )
     """)
     con.commit()
-    # Migrate existing DBs that predate path_tokens column
-    try:
-        con.execute("ALTER TABLE chunks ADD COLUMN path_tokens TEXT DEFAULT ''")
-        con.commit()
-    except sqlite3.OperationalError:
-        pass  # column already exists
+    # Migrate existing DBs that predate path_tokens / display_name columns
+    for column in ("path_tokens", "display_name"):
+        try:
+            con.execute(f"ALTER TABLE chunks ADD COLUMN {column} TEXT DEFAULT ''")
+            con.commit()
+        except sqlite3.OperationalError:
+            pass  # column already exists
     _schema_initialized = True
     return con
 
@@ -153,9 +155,11 @@ def add(
     documents: list[str],
     metadatas: list[dict],
     path_tokens: list[str] | None = None,
+    display_names: list[str] | None = None,
 ):
     con = _conn()
     tokens = path_tokens or [""] * len(ids)
+    dnames = display_names or [""] * len(ids)
     rows = [
         (
             id_,
@@ -166,18 +170,38 @@ def add(
             meta.get("timestamp", ""),
             np.array(emb, dtype=np.float32).tobytes(),
             tok,
+            dname,
         )
-        for id_, emb, doc, meta, tok in zip(ids, embeddings, documents, metadatas, tokens)
+        for id_, emb, doc, meta, tok, dname in zip(ids, embeddings, documents, metadatas, tokens, dnames)
     ]
     con.executemany(
         "INSERT OR REPLACE INTO chunks "
-        "(id, document, source_type, source_path, chunk_index, timestamp, embedding, path_tokens) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "(id, document, source_type, source_path, chunk_index, timestamp, embedding, path_tokens, display_name) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         rows,
     )
     con.commit()
     con.close()
     _invalidate_cache()
+
+
+def update_display_names(source_type: str, display_names: dict[str, str]) -> int:
+    """Backfill display_name for existing rows, keyed by source_path. Cheap
+    UPDATE — no re-embedding/re-chunking needed since source_path and chunk
+    ids are unaffected. Returns the number of rows updated."""
+    con = _conn()
+    updated = 0
+    for source_path, display_name in display_names.items():
+        cur = con.execute(
+            "UPDATE chunks SET display_name = ? WHERE source_type = ? AND source_path = ?",
+            (display_name, source_type, source_path),
+        )
+        updated += cur.rowcount
+    con.commit()
+    con.close()
+    if updated:
+        _invalidate_cache()
+    return updated
 
 
 def delete_source(source_type: str, source_path: str):
@@ -205,6 +229,16 @@ def clear():
     con.commit()
     con.close()
     _invalidate_cache()
+
+
+def distinct_source_paths(source_type: str) -> list[str]:
+    con = _conn()
+    rows = con.execute(
+        "SELECT DISTINCT source_path FROM chunks WHERE source_type = ?",
+        (source_type,),
+    ).fetchall()
+    con.close()
+    return [r[0] for r in rows]
 
 
 # ---------------------------------------------------------------------------
@@ -324,7 +358,7 @@ def _rank(
     if not meta:
         return {"ids": [[]], "documents": [[]], "metadatas": [[]], "distances": [[]]}
 
-    ids, source_types, source_paths, chunk_idxs, timestamps, _path_tokens_list = zip(*meta)
+    ids, source_types, source_paths, chunk_idxs, timestamps, _path_tokens_list, display_names = zip(*meta)
 
     q = np.array(embedding, dtype=np.float32)
     norms = np.linalg.norm(all_emb, axis=1) * np.linalg.norm(q)
@@ -351,6 +385,7 @@ def _rank(
             "source_path": source_paths[i],
             "chunk_index": chunk_idxs[i],
             "timestamp": timestamps[i],
+            "display_name": display_names[i],
         } for i in top_k]],
         "distances": [[round(float(combined[i]), 4) for i in top_k]],
     }

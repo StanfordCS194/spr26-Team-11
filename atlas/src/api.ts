@@ -21,6 +21,7 @@ interface BackendSearchResult {
   source_path: string;
   snippet: string;
   score: number;
+  display_name: string;
 }
 
 // -----------------------------------------------------------------------------
