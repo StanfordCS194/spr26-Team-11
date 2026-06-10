@@ -36,7 +36,7 @@ def _adaptive_semantic_weight(query_tokens: list[str], source_filter: str | None
       keyword (course code, version) → 0.5 to give path scoring more weight.
     - Plain natural-language queries → 0.7 default.
     """
-    if source_filter in ("imessage", "gcal"):
+    if source_filter in ("imessage", "gcal", "gmail"):
         return 1.0
     if any(any(c.isdigit() for c in t) for t in query_tokens):
         return 0.5

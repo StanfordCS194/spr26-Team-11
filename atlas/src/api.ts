@@ -58,6 +58,8 @@ function mapSource(backend: string): SourceType {
       return "Messages";
     case "gcal":
       return "Calendar";
+    case "gmail":
+      return "Mail";
     case "filesystem":
     default:
       return "Documents";
@@ -93,6 +95,12 @@ function mapResult(
     subtitle = "Calendar event";
     from = "Google Calendar";
     openInApp = "Calendar";
+  } else if (source === "Mail") {
+    const firstNewline = r.snippet.indexOf("\n");
+    title = firstNewline >= 0 ? r.snippet.slice(0, firstNewline) : r.snippet;
+    subtitle = "Gmail message";
+    from = "Gmail";
+    openInApp = "Mail";
   } else {
     title = pathBasename(r.source_path);
     subtitle = pathDirname(r.source_path);

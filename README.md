@@ -74,7 +74,8 @@ backend/
 ├── cli.py         Thin HTTP client over the daemon + daemon lifecycle
 ├── config.py      Constants (paths, model names, daemon URL)
 ├── ingest.py      File walker, parser, chunker, path-context extractor (filesystem + iMessage)
-├── gcal.py        Google Calendar OAuth, event fetch, chunking, index entry point
+├── gcal.py        Google Calendar OAuth, event fetch, chunking
+├── gmail.py       Gmail OAuth, message fetch, chunking (sibling to gcal.py)
 ├── embed.py       fastembed wrapper (lazy-loaded singleton)
 ├── rerank.py      Cross-encoder wrapper (lazy-loaded singleton)
 ├── llm.py         Query-parser: Qwen2.5-0.5B (local) or OpenAI-compatible (cloud)
@@ -199,6 +200,9 @@ The CLI auto-starts the daemon on the first command. The first call will warm mo
 # Index Google Calendar events (see "Google Calendar setup" below for OAuth)
 .venv/bin/python cli.py index --gcal
 
+# Index Gmail (opt-in; see "Google Mail / Gmail setup" below)
+.venv/bin/python cli.py index --gmail
+
 # Wipe the index and rebuild from a directory (use after upgrading the
 # embedding model or changing path-context logic)
 .venv/bin/python cli.py reindex ~/Desktop
@@ -227,6 +231,43 @@ Indexing behaviour:
 # Force re-auth (e.g. after the 7-day testing-mode refresh-token expiry)
 .venv/bin/python cli.py config gcal-clear
 ```
+
+#### Google Mail / Gmail setup
+
+Mail indexing is **opt-in only** — it does not run unless you pass `--gmail`. Atlas reads email metadata and body text from your Gmail account over the Gmail API and stores chunks locally for semantic search; nothing is sent to a third-party service beyond Google's API.
+
+The first `--gmail` run opens a browser tab for Google's OAuth consent screen. The access/refresh token is persisted to the macOS Keychain via `keyring` (separate slot from Calendar), so later runs are silent.
+
+Prerequisites:
+
+1. **OAuth client credentials.** Download a Desktop-app OAuth client JSON from Google Cloud Console → APIs & Services → Credentials. Save it as [backend/gmail_client.json](backend/gmail_client.json) (see [backend/gmail_client.example.json](backend/gmail_client.example.json)). The file is gitignored — use your own client per developer/tester. You may reuse the same Cloud project and OAuth client as Calendar if you add the Gmail scope to that client's consent screen, or create a dedicated Desktop client for Mail.
+2. **Gmail API enabled** on the Cloud project.
+3. **Test-user allowlist** (while the OAuth consent screen is in "Testing" mode): OAuth consent screen → Test users → add the Gmail address you will authorize. Without this, sign-in fails with "Access blocked".
+
+OAuth scope: `https://www.googleapis.com/auth/gmail.readonly` (read-only).
+
+Indexing behaviour:
+
+- Inbox only, last **6 months**, up to **500 messages**, excluding spam and trash (`newer_than:180d in:inbox -in:spam -in:trash`).
+- Plain-text body preferred; HTML bodies are stripped to readable text.
+- Attachments are not indexed.
+- Each message becomes one or more chunks prefixed with `[Mail: SUBJECT | From: ... | To: ... | Date: YYYY-MM-DD]` so the bi-encoder can match on subject, sender, recipients, and date.
+- API or auth failures are logged and return zero indexed messages — the daemon does not crash.
+
+```bash
+# Index Gmail (browser opens on first run)
+.venv/bin/python cli.py index --gmail
+
+# Search mail only
+.venv/bin/python cli.py search "project kickoff" --source gmail
+
+# Force re-auth
+.venv/bin/python cli.py config gmail-clear
+```
+
+To test with a small mailbox quickly, temporarily lower `_MAX_MESSAGES` in [backend/gmail.py](backend/gmail.py) (default 500) before indexing.
+
+Verify indexing: `cli.py status` should show a non-zero **Gmail** chunk count. Verify search: `cli.py search "<subject or phrase from a known email>" --source gmail`.
 
 ### Step 3 — Daemon lifecycle
 
@@ -257,6 +298,7 @@ Before launching the UI, verify the daemon is returning results:
 .venv/bin/python cli.py search "cs107" --limit 5
 .venv/bin/python cli.py search "ryan" --source imessage
 .venv/bin/python cli.py search "team standup" --source gcal
+.venv/bin/python cli.py search "budget proposal" --source gmail
 
 # /ask routes through the local LLM for intent parsing
 .venv/bin/python cli.py ask "find the directory with my cs107 homework"
@@ -297,6 +339,7 @@ Live results appear ~200 ms after you stop typing. The result list shows up to 5
 - **iMessage indexing fails**: open System Settings → Privacy & Security → Full Disk Access and add Terminal (or whatever shell you're using). Fully quit and reopen the terminal afterwards — the permission only takes effect on a fresh process.
 - **Google Calendar OAuth fails / "Access blocked"**: the tester's Gmail isn't on the Test users list. Add it in Google Cloud Console → OAuth consent screen → Test users. If a previously-working token has stopped working after a week, the testing-mode refresh-token expired — run `cli.py config gcal-clear` and re-index.
 - **`gcal_client.json missing` error**: download the Desktop-app OAuth client JSON from your Cloud project's Credentials page and save it to [backend/gcal_client.json](backend/gcal_client.json).
+- **Gmail OAuth fails / `gmail_client.json missing`**: same as Calendar — enable Gmail API, add test users, save credentials to [backend/gmail_client.json](backend/gmail_client.json). Run `cli.py config gmail-clear` to re-auth after token expiry.
 - **Frontend can't reach daemon**: check `curl http://127.0.0.1:8765/status` from a terminal. If that fails, the daemon isn't running — `cli.py daemon start`.
 - **Cloud parser shows "no API key in Keychain"**: re-run `cli.py config set-cloud-parser true` and paste the key when prompted. Use `cli.py config show` to confirm whether a key is stored.
 - **Cloud badge (☁) doesn't update after toggling `cloud_parser`**: the renderer refetches `/config` on every overlay show, so a fresh `Option+Space` after `cli.py daemon restart` is enough. If it still doesn't appear, force a renderer reload (close and re-launch `npm start`).

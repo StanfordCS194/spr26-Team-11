@@ -191,7 +191,7 @@ def _print_results(results: list[dict]):
 def search(
     query: str = typer.Argument(..., help="Natural language search query."),
     limit: int = typer.Option(10, "--limit", "-n"),
-    source: Optional[str] = typer.Option(None, "--source", "-s", help="Filter by source: filesystem, imessage, or gcal."),
+    source: Optional[str] = typer.Option(None, "--source", "-s", help="Filter by source: filesystem, imessage, gcal, or gmail."),
 ):
     """Semantic search across all indexed data."""
     _ensure_daemon()
@@ -282,10 +282,11 @@ def index(
     path: Optional[Path] = typer.Argument(None, help="Directory to index (filesystem)."),
     imessage: bool = typer.Option(False, "--imessage", help="Index iMessage history."),
     gcal: bool = typer.Option(False, "--gcal", help="Index Google Calendar events."),
+    gmail: bool = typer.Option(False, "--gmail", help="Index Gmail messages (opt-in; reads mail locally for search)."),
 ):
-    """Index a directory, iMessage history, and/or Google Calendar (runs on the daemon, blocks with live progress)."""
-    if path is None and not imessage and not gcal:
-        console.print("[red]Provide a path to index or use --imessage / --gcal.[/red]")
+    """Index a directory, iMessage history, Google Calendar, and/or Gmail."""
+    if path is None and not imessage and not gcal and not gmail:
+        console.print("[red]Provide a path to index or use --imessage / --gcal / --gmail.[/red]")
         raise typer.Exit(1)
     _ensure_daemon()
     if path is not None:
@@ -325,6 +326,20 @@ def index(
         r.raise_for_status()
         result = _poll_index_progress("Indexing Google Calendar")
         console.print(f"[green]Indexed {result['indexed']} events[/green]")
+    if gmail:
+        import gmail as gmail_mod
+        if not gmail_mod.has_token():
+            console.print(
+                "[dim]No Gmail token cached. A browser window will "
+                "open shortly for sign-in.[/dim]"
+            )
+        r = requests.post(f"{DAEMON_URL}/index/gmail")
+        if r.status_code in (400, 409):
+            console.print(f"[red]{r.json().get('detail')}[/red]")
+            raise typer.Exit(1)
+        r.raise_for_status()
+        result = _poll_index_progress("Indexing Gmail")
+        console.print(f"[green]Indexed {result['indexed']} messages[/green]")
 
 
 @app.command()
@@ -359,12 +374,18 @@ def status():
         ("Filesystem", "filesystem"),
         ("iMessage", "imessage"),
         ("Calendar", "gcal"),
+        ("Gmail", "gmail"),
     ]
     for label, key in labels:
         count = by_source.get(key, 0)
         if key == "gcal":
             import gcal as gcal_mod
             if count == 0 and not gcal_mod.has_token():
+                console.print(f"  {label}: [dim]not connected[/dim]")
+                continue
+        if key == "gmail":
+            import gmail as gmail_mod
+            if count == 0 and not gmail_mod.has_token():
                 console.print(f"  {label}: [dim]not connected[/dim]")
                 continue
         console.print(f"  {label}: {count} chunks")
@@ -539,6 +560,16 @@ def config_gcal_clear():
         console.print("[green]Google Calendar token removed.[/green]")
     else:
         console.print("[yellow]No Google Calendar token was stored.[/yellow]")
+
+
+@config_app.command("gmail-clear")
+def config_gmail_clear():
+    """Remove the Gmail OAuth token from the Keychain."""
+    import gmail
+    if gmail.clear_token():
+        console.print("[green]Gmail token removed.[/green]")
+    else:
+        console.print("[yellow]No Gmail token was stored.[/yellow]")
 
 
 def _rewrite_leading_help_flag(argv: list[str]) -> list[str]:

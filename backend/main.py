@@ -250,6 +250,45 @@ def index_gcal(background: BackgroundTasks):
     return {"status": "started", "target": "gcal"}
 
 
+def _run_gmail_index():
+    global _index_job
+    import gmail
+
+    def on_progress(done: int, total: int):
+        with _index_lock:
+            _index_job.indexed = done
+            _index_job.total = total
+
+    try:
+        n = ingest.index_gmail(progress_callback=on_progress)
+        with _index_lock:
+            if n == 0 and not gmail.has_token():
+                _index_job.state = "error"
+                _index_job.error = "Authorization declined. No tokens stored."
+            else:
+                _index_job.state = "done"
+                _index_job.indexed = n
+            _index_job.finished_at = time.time()
+    except FileNotFoundError as e:
+        with _index_lock:
+            _index_job.state = "error"
+            _index_job.error = str(e)
+            _index_job.finished_at = time.time()
+    except Exception as e:
+        with _index_lock:
+            _index_job.state = "error"
+            _index_job.error = str(e)
+            _index_job.finished_at = time.time()
+
+
+@app.post("/index/gmail")
+def index_gmail_endpoint(background: BackgroundTasks):
+    if not _start_job("gmail"):
+        raise HTTPException(status_code=409, detail=f"Index job already running: {_index_job.target}")
+    background.add_task(_run_gmail_index)
+    return {"status": "started", "target": "gmail"}
+
+
 @app.get("/index/status")
 def index_status():
     with _index_lock:

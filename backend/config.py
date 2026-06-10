@@ -85,3 +85,10 @@ GCAL_SCOPES = [
     "https://www.googleapis.com/auth/calendar.readonly",
     "https://www.googleapis.com/auth/calendar.events.readonly",
 ]
+
+# Gmail OAuth: separate Desktop-app client JSON and Keychain slot from Calendar.
+GMAIL_CLIENT_FILE = Path(__file__).parent / "gmail_client.json"
+GMAIL_KEYCHAIN_USERNAME = "gmail_token"
+GMAIL_SCOPES = [
+    "https://www.googleapis.com/auth/gmail.readonly",
+]

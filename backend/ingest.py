@@ -290,3 +290,58 @@ def index_gcal(progress_callback=None, verbose: bool = False) -> int:
             print(f"  indexed event: {source_path} ({len(chunks)} chunks)")
 
     return indexed
+
+
+# ---------------------------------------------------------------------------
+# Gmail ingestion. Auth, fetch, and chunking live in `gmail.py`.
+# ---------------------------------------------------------------------------
+
+def index_gmail(progress_callback=None, verbose: bool = False) -> int:
+    """Authorize, fetch, chunk, embed, and store recent inbox messages."""
+    import gmail
+
+    creds = gmail.authorize(interactive=True)
+    if creds is None:
+        return 0
+
+    messages = gmail.fetch_messages(creds)
+    total = len(messages)
+    if progress_callback is not None:
+        progress_callback(0, total)
+
+    indexed = 0
+    for msg in messages:
+        chunks = gmail.message_to_chunks(msg)
+        if not chunks:
+            continue
+
+        source_path = gmail._message_source_path(msg)
+        ts = gmail._message_timestamp(msg)
+
+        ids = [
+            hashlib.md5(f"gmail:{source_path}:{ci}".encode()).hexdigest()
+            for ci, _, _ in chunks
+        ]
+        embeddable = [text for _, text, _ in chunks]
+        snippets = [snippet for _, _, snippet in chunks]
+        metadatas = [
+            {"source_type": "gmail", "source_path": source_path, "chunk_index": ci, "timestamp": ts}
+            for ci, _, _ in chunks
+        ]
+        embeddings = embedder.embed(embeddable)
+
+        store.add(
+            ids=ids,
+            embeddings=embeddings,
+            documents=snippets,
+            metadatas=metadatas,
+            path_tokens=[""] * len(chunks),
+        )
+
+        indexed += 1
+        if progress_callback is not None:
+            progress_callback(indexed, total)
+        if verbose:
+            print(f"  indexed message: {source_path} ({len(chunks)} chunks)")
+
+    return indexed
