@@ -4,6 +4,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
+import contacts
 import store
 import embed as embedder
 from config import CHUNK_SIZE, CHUNK_OVERLAP, INDEXABLE_EXTENSIONS, EXCLUDED_DIRS, IMESSAGE_DB
@@ -167,6 +168,9 @@ def index_imessage(verbose: bool = False) -> int:
             "Grant Full Disk Access to Terminal in System Settings > Privacy & Security."
         )
 
+    contact_lookup = contacts.load_handle_display_names()
+    store.delete_by_source_type("imessage")
+
     con = sqlite3.connect(f"file:{IMESSAGE_DB}?mode=ro", uri=True)
     cur = con.cursor()
 
@@ -192,10 +196,14 @@ def index_imessage(verbose: bool = False) -> int:
         conversations.setdefault(contact, []).append((body, apple_date, is_from_me))
 
     indexed = 0
-    for contact, messages in conversations.items():
+    for handle_id, messages in conversations.items():
+        display_name = contacts.lookup_display_name(handle_id, contact_lookup)
+        speaker_label = display_name or handle_id
+        source_path = contacts.format_contact_label(handle_id, contact_lookup)
+
         lines = []
         for body, apple_date, is_from_me in messages:
-            speaker = "Me" if is_from_me else contact
+            speaker = "Me" if is_from_me else speaker_label
             ts = datetime(2001, 1, 1, tzinfo=timezone.utc).timestamp() + apple_date / 1e9
             dt = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d")
             lines.append(f"[{dt}] {speaker}: {body}")
@@ -205,9 +213,9 @@ def index_imessage(verbose: bool = False) -> int:
         if not chunks:
             continue
 
-        ids = [_chunk_id("imessage", contact, i) for i in range(len(chunks))]
+        ids = [_chunk_id("imessage", handle_id, i) for i in range(len(chunks))]
         metadatas = [
-            {"source_type": "imessage", "source_path": contact, "chunk_index": i, "timestamp": ""}
+            {"source_type": "imessage", "source_path": source_path, "chunk_index": i, "timestamp": ""}
             for i in range(len(chunks))
         ]
         embeddings = embedder.embed(chunks)
@@ -221,7 +229,7 @@ def index_imessage(verbose: bool = False) -> int:
 
         indexed += 1
         if verbose:
-            print(f"  indexed conversation with: {contact} ({len(chunks)} chunks)")
+            print(f"  indexed conversation with: {source_path} ({len(chunks)} chunks)")
 
     return indexed
 
