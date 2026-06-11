@@ -225,43 +225,37 @@ def index_imessage(verbose: bool = False) -> int:
     for contact, body, apple_date, is_from_me in rows:
         conversations.setdefault(contact, []).append((body, apple_date, is_from_me))
 
-    phone_map, email_map = contacts.load_contact_maps()
-
     indexed = 0
     for handle_id, messages in conversations.items():
         display_name = contacts.lookup_display_name(handle_id, contact_lookup)
         speaker_label = display_name or handle_id
         source_path = contacts.format_contact_label(handle_id, contact_lookup)
 
-        lines = []
-        for body, apple_date, is_from_me in messages:
-            speaker = "Me" if is_from_me else speaker_label
-            ts = datetime(2001, 1, 1, tzinfo=timezone.utc).timestamp() + apple_date / 1e9
-            dt = datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d")
-            lines.append(f"[{dt}] {speaker}: {body}")
+        chunk_count = 0
+        for session_index, session in enumerate(_split_sessions(messages)):
+            lines = []
+            session_start_iso = _apple_date_to_iso(session[0][1])
+            for body, apple_date, is_from_me in session:
+                speaker = "Me" if is_from_me else speaker_label
+                dt = _apple_date_to_iso(apple_date)[:10]
+                lines.append(f"[{dt}] {speaker}: {body}")
 
-        text = "\n".join(lines)
-        chunks = chunk_text(text)
-        if not chunks:
-            continue
+            session_chunks = chunk_text("\n".join(lines))
+            if not session_chunks:
+                continue
 
-        ids = [_chunk_id("imessage", handle_id, i) for i in range(len(chunks))]
-        metadatas = [
-            {"source_type": "imessage", "source_path": source_path, "chunk_index": i, "timestamp": ""}
-            for i in range(len(chunks))
-        ]
-        embeddings = embedder.embed(chunks)
-        store.add(
-            ids=ids,
-            embeddings=embeddings,
-            documents=chunks,
-            metadatas=metadatas,
-            path_tokens=[""] * len(chunks),
-        )
-
-            ids = [_chunk_id("imessage", session_key, i) for i in range(len(session_chunks))]
+            session_key = f"{handle_id}:{session_start_iso}:{session_index}"
+            ids = [
+                _chunk_id("imessage", session_key, i)
+                for i in range(len(session_chunks))
+            ]
             metadatas = [
-                {"source_type": "imessage", "source_path": contact, "chunk_index": i, "timestamp": session_start_iso}
+                {
+                    "source_type": "imessage",
+                    "source_path": source_path,
+                    "chunk_index": i,
+                    "timestamp": session_start_iso,
+                }
                 for i in range(len(session_chunks))
             ]
             embeddings = embedder.embed(session_chunks)
@@ -275,10 +269,10 @@ def index_imessage(verbose: bool = False) -> int:
             )
             chunk_count += len(session_chunks)
 
-        if chunk_count:
+        if chunk_count > 0:
             indexed += 1
         if verbose:
-            print(f"  indexed conversation with: {source_path} ({len(chunks)} chunks)")
+            print(f"  indexed conversation with: {source_path} ({chunk_count} chunks)")
 
     return indexed
 

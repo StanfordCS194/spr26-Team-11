@@ -108,6 +108,53 @@ def _fetch_documents(ids: list[str]) -> dict[str, str]:
     return dict(rows)
 
 
+def keyword_candidates(
+    query_tokens: list[str],
+    source_filter: str | None = None,
+    n_results: int = 50,
+) -> dict:
+    """Fetch chunks whose text contains every query token.
+
+    Semantic retrieval is the main candidate source, but short course/file
+    queries like "ENGR 76 project" can miss exact-title chunks before rerank.
+    This small SQL pass adds high-precision lexical matches to the rerank pool.
+    """
+    tokens = [t.lower() for t in query_tokens if len(t) > 1]
+    if not tokens:
+        return {"ids": [[]], "documents": [[]], "metadatas": [[]], "distances": [[]]}
+
+    clauses = ["lower(document) LIKE ?" for _ in tokens]
+    params: list[object] = [f"%{token}%" for token in tokens]
+    if source_filter:
+        clauses.append("source_type = ?")
+        params.append(source_filter)
+    params.append(n_results)
+
+    con = _conn()
+    rows = con.execute(
+        "SELECT id, document, source_type, source_path, chunk_index, "
+        "timestamp, display_name FROM chunks "
+        f"WHERE {' AND '.join(clauses)} "
+        "LIMIT ?",
+        params,
+    ).fetchall()
+    con.close()
+
+    return {
+        "ids": [[row[0] for row in rows]],
+        "documents": [[row[1] for row in rows]],
+        "metadatas": [[{
+            "source_type": row[2],
+            "source_path": row[3],
+            "chunk_index": row[4],
+            "timestamp": row[5],
+            "display_name": row[6],
+        } for row in rows]],
+        # Synthetic best-distance: these candidates still go through rerank.
+        "distances": [[0.0 for _ in rows]],
+    }
+
+
 # ---------------------------------------------------------------------------
 # Schema init (called once per connection)
 # ---------------------------------------------------------------------------
