@@ -30,15 +30,19 @@
 //     </div>
 // =============================================================================
 
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { MockQuery, MockResult, SourceType } from "./lib/types";
 import { getAtlasSummaryText, shortDate } from "./lib/format";
 import { logEvent } from "./logger";
 import {
   askDaemon,
+  fetchDaemonOverview,
   fetchDaemonConfig,
+  indexImessage,
   indexFilesystemPath,
   searchDaemon,
+  type BackendSourceKey,
+  type DaemonOverview,
 } from "./api";
 import { ResultRow } from "./components/ResultRow";
 
@@ -79,6 +83,17 @@ const DEFAULT_SOURCE_SETTINGS: SourceSettings = {
   Documents: true,
   Calendar: true,
 };
+
+const STATUS_SOURCE_OPTIONS: Array<{
+  backendKey: BackendSourceKey;
+  source: SourceType;
+  label: string;
+}> = [
+  { backendKey: "filesystem", source: "Documents", label: "Finder" },
+  { backendKey: "imessage", source: "Messages", label: "Messages" },
+  { backendKey: "gcal", source: "Calendar", label: "Calendar" },
+  { backendKey: "gmail", source: "Mail", label: "Mail" },
+];
 
 function loadSourceSettings(): SourceSettings {
   try {
@@ -742,8 +757,30 @@ function SettingsPanel({
   onClose: () => void;
 }) {
   const [isPickingFolder, setIsPickingFolder] = useState<boolean>(false);
+  const [isIndexingImessage, setIsIndexingImessage] = useState<boolean>(false);
   const [lastIndexedFolder, setLastIndexedFolder] = useState<string | null>(null);
   const [indexMessage, setIndexMessage] = useState<string>("");
+  const [daemonOverview, setDaemonOverview] = useState<DaemonOverview | null>(null);
+  const [isRefreshingStatus, setIsRefreshingStatus] = useState<boolean>(false);
+
+  const refreshDaemonOverview = useCallback(async (): Promise<void> => {
+    setIsRefreshingStatus(true);
+    try {
+      setDaemonOverview(await fetchDaemonOverview());
+    } finally {
+      setIsRefreshingStatus(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshDaemonOverview();
+    const timer = window.setInterval(() => {
+      void refreshDaemonOverview();
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [refreshDaemonOverview]);
+
+  const isIndexJobRunning = daemonOverview?.indexJob?.state === "running";
 
   const handleIndexFolder = async (): Promise<void> => {
     setIsPickingFolder(true);
@@ -763,6 +800,23 @@ function SettingsPanel({
       setIndexMessage(message);
     } finally {
       setIsPickingFolder(false);
+      void refreshDaemonOverview();
+    }
+  };
+
+  const handleIndexImessage = async (): Promise<void> => {
+    setIsIndexingImessage(true);
+    setIndexMessage("");
+    try {
+      await indexImessage();
+      setIndexMessage("iMessage indexing started in the background.");
+    } catch (e) {
+      const message =
+        e instanceof Error ? e.message : "Failed to start iMessage indexing.";
+      setIndexMessage(message);
+    } finally {
+      setIsIndexingImessage(false);
+      void refreshDaemonOverview();
     }
   };
 
@@ -778,6 +832,15 @@ function SettingsPanel({
         >
           Done
         </button>
+      </div>
+      <div className="settings-panel__section">
+        <h3>Status</h3>
+        <DaemonStatusPanel
+          overview={daemonOverview}
+          sourceSettings={sourceSettings}
+          isRefreshing={isRefreshingStatus}
+          onRefresh={() => void refreshDaemonOverview()}
+        />
       </div>
       <div className="settings-panel__section">
         <h3>Search Results</h3>
@@ -805,15 +868,25 @@ function SettingsPanel({
       </div>
       <div className="settings-panel__section">
         <h3>Indexing</h3>
-        <p>Select a folder from Finder to start filesystem indexing.</p>
-        <button
-          className="settings-panel__action"
-          type="button"
-          onClick={() => void handleIndexFolder()}
-          disabled={isPickingFolder}
-        >
-          {isPickingFolder ? "Choosing folder..." : "Choose Folder and Index"}
-        </button>
+        <p>Start an indexing job for Finder files or local iMessage history.</p>
+        <div className="settings-panel__actions">
+          <button
+            className="settings-panel__action"
+            type="button"
+            onClick={() => void handleIndexFolder()}
+            disabled={isPickingFolder || isIndexingImessage || isIndexJobRunning}
+          >
+            {isPickingFolder ? "Choosing folder..." : "Choose Folder and Index"}
+          </button>
+          <button
+            className="settings-panel__action settings-panel__action--secondary"
+            type="button"
+            onClick={() => void handleIndexImessage()}
+            disabled={isPickingFolder || isIndexingImessage || isIndexJobRunning}
+          >
+            {isIndexingImessage ? "Starting Messages..." : "Index iMessage"}
+          </button>
+        </div>
         {lastIndexedFolder && (
           <p className="settings-panel__meta">
             Last selected folder: <code>{lastIndexedFolder}</code>
@@ -823,6 +896,121 @@ function SettingsPanel({
       </div>
     </section>
   );
+}
+
+function DaemonStatusPanel({
+  overview,
+  sourceSettings,
+  isRefreshing,
+  onRefresh,
+}: {
+  overview: DaemonOverview | null;
+  sourceSettings: SourceSettings;
+  isRefreshing: boolean;
+  onRefresh: () => void;
+}) {
+  const enabledSourceLabels = SEARCH_SOURCE_OPTIONS.filter(
+    (option) => sourceSettings[option.source]
+  )
+    .map((option) => option.label)
+    .join(", ");
+  const indexJob = overview?.indexJob;
+  const jobStatus = indexJob ? formatIndexJob(indexJob) : "No index job seen.";
+  const lastIndexed =
+    indexJob && indexJob.finished_at > 0
+      ? formatTimestamp(indexJob.finished_at)
+      : "Not yet this session";
+  const backendStateClass =
+    overview === null
+      ? "daemon-status__pill daemon-status__pill--checking"
+      : overview.isRunning
+        ? "daemon-status__pill daemon-status__pill--online"
+        : "daemon-status__pill daemon-status__pill--offline";
+  const backendStateLabel =
+    overview === null
+      ? "Checking backend"
+      : overview.isRunning
+        ? "Backend running"
+        : "Backend offline";
+
+  return (
+    <div className="daemon-status">
+      <div className="daemon-status__header">
+        <span className={backendStateClass}>{backendStateLabel}</span>
+        <button
+          className="daemon-status__refresh"
+          type="button"
+          onClick={onRefresh}
+          disabled={isRefreshing}
+        >
+          {isRefreshing ? "Refreshing..." : "Refresh"}
+        </button>
+      </div>
+      <dl className="daemon-status__grid">
+        <div>
+          <dt>Total chunks</dt>
+          <dd>{overview?.isRunning ? overview.totalChunks.toLocaleString() : "—"}</dd>
+        </div>
+        <div>
+          <dt>Enabled sources</dt>
+          <dd>{enabledSourceLabels || "None"}</dd>
+        </div>
+        <div>
+          <dt>Index job</dt>
+          <dd>{overview?.isRunning ? jobStatus : "Unavailable"}</dd>
+        </div>
+        <div>
+          <dt>Last indexed</dt>
+          <dd>{overview?.isRunning ? lastIndexed : "Unavailable"}</dd>
+        </div>
+      </dl>
+      {overview?.isRunning && (
+        <div className="daemon-status__sources" aria-label="Indexed chunks by source">
+          {STATUS_SOURCE_OPTIONS.map((option) => (
+            <span className="daemon-status__source" key={option.backendKey}>
+              {option.label}:{" "}
+              {(overview.bySource[option.backendKey] ?? 0).toLocaleString()}
+              {!sourceSettings[option.source] ? " (off)" : ""}
+            </span>
+          ))}
+        </div>
+      )}
+      {overview?.error && <p className="daemon-status__error">{overview.error}</p>}
+    </div>
+  );
+}
+
+function formatIndexJob(job: NonNullable<DaemonOverview["indexJob"]>): string {
+  if (job.state === "running") {
+    const progress =
+      job.total > 0 ? ` (${job.indexed.toLocaleString()}/${job.total.toLocaleString()})` : "";
+    return `Running ${formatIndexTarget(job.target)}${progress}`;
+  }
+  if (job.state === "done") {
+    return `Done ${formatIndexTarget(job.target)} (${job.indexed.toLocaleString()} indexed)`;
+  }
+  if (job.state === "error") {
+    return `Error ${formatIndexTarget(job.target)}`;
+  }
+  return "Idle";
+}
+
+function formatIndexTarget(target: string): string {
+  if (!target) return "";
+  if (target === "imessage") return "Messages";
+  if (target === "gcal") return "Calendar";
+  if (target === "gmail") return "Mail";
+  if (target.startsWith("filesystem:")) return "Finder";
+  return target;
+}
+
+function formatTimestamp(epochSeconds: number): string {
+  return new Date(epochSeconds * 1000).toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
 }
 
 // =============================================================================

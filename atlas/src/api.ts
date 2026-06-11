@@ -15,6 +15,31 @@ import type { MockQuery, MockResult, SourceType } from "./lib/types";
 
 const DAEMON_URL = "http://127.0.0.1:8765";
 
+export type BackendSourceKey = "filesystem" | "imessage" | "gcal" | "gmail";
+
+interface BackendStatus {
+  total_chunks: number;
+  by_source: Partial<Record<BackendSourceKey, number>>;
+}
+
+export interface DaemonIndexStatus {
+  state: "idle" | "running" | "done" | "error";
+  target: string;
+  indexed: number;
+  total: number;
+  started_at: number;
+  finished_at: number;
+  error: string;
+}
+
+export interface DaemonOverview {
+  isRunning: boolean;
+  totalChunks: number;
+  bySource: Partial<Record<BackendSourceKey, number>>;
+  indexJob: DaemonIndexStatus | null;
+  error?: string;
+}
+
 // Mirror of backend/main.py:SearchResult.
 interface BackendSearchResult {
   source_type: string;
@@ -236,6 +261,43 @@ export async function fetchDaemonConfig(): Promise<{ parser_mode: "local" | "clo
 }
 
 /**
+ * Fetch daemon/index status for the settings panel. Network failures are
+ * returned as data so the UI can show "offline" instead of throwing.
+ */
+export async function fetchDaemonOverview(): Promise<DaemonOverview> {
+  try {
+    const [statusRes, indexStatusRes] = await Promise.all([
+      fetch(`${DAEMON_URL}/status`),
+      fetch(`${DAEMON_URL}/index/status`),
+    ]);
+    if (!statusRes.ok) {
+      throw new Error(`Daemon /status returned ${statusRes.status}`);
+    }
+    if (!indexStatusRes.ok) {
+      throw new Error(`Daemon /index/status returned ${indexStatusRes.status}`);
+    }
+    const status: BackendStatus = await statusRes.json();
+    const indexJob: DaemonIndexStatus = await indexStatusRes.json();
+    return {
+      isRunning: true,
+      totalChunks: status.total_chunks,
+      bySource: status.by_source,
+      indexJob,
+    };
+  } catch (e) {
+    const message =
+      e instanceof Error ? e.message : "Could not reach the Atlas daemon.";
+    return {
+      isRunning: false,
+      totalChunks: 0,
+      bySource: {},
+      indexJob: null,
+      error: message,
+    };
+  }
+}
+
+/**
  * Start a filesystem indexing job for the selected folder.
  */
 export async function indexFilesystemPath(
@@ -252,6 +314,23 @@ export async function indexFilesystemPath(
       .then((v: { detail?: string }) => v.detail ?? `status ${res.status}`)
       .catch(() => `status ${res.status}`);
     throw new Error(`Failed to start indexing: ${detail}`);
+  }
+  return res.json();
+}
+
+/**
+ * Start an iMessage indexing job.
+ */
+export async function indexImessage(): Promise<{ status: string; target: string }> {
+  const res = await fetch(`${DAEMON_URL}/index/imessage`, {
+    method: "POST",
+  });
+  if (!res.ok) {
+    const detail = await res
+      .json()
+      .then((v: { detail?: string }) => v.detail ?? `status ${res.status}`)
+      .catch(() => `status ${res.status}`);
+    throw new Error(`Failed to start iMessage indexing: ${detail}`);
   }
   return res.json();
 }
