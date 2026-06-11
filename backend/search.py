@@ -68,6 +68,13 @@ def search(query: str, n_results: int = 10, source_filter: str | None = None) ->
         embedding, query_tokens, n_results=fetch_n,
         source_filter=source_filter, semantic_weight=semantic_weight,
     )
+    keyword_raw = store.keyword_candidates(
+        query_tokens,
+        source_filter=source_filter,
+        n_results=RERANK_CANDIDATES,
+    )
+    for key in ("ids", "documents", "metadatas", "distances"):
+        raw[key][0].extend(keyword_raw[key][0])
 
     # Dedup by source_path, keeping the lowest-distance chunk per file.
     # Carry the full doc text through for re-ranking.
